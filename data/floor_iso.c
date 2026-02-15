@@ -1,0 +1,50 @@
+
+//{{BLOCK(floor_iso)
+
+//======================================================================
+//
+//	floor_iso, 64x8@4, 
+//	+ palette 16 entries, not compressed
+//	+ 9 tiles (t|f|p reduced) not compressed
+//	+ regular map (flat), not compressed, 4x1 
+//	Metatiled by 2x1
+//	Total size: 32 + 288 + 20 + 8 = 348
+//
+//	Time-stamp: 2026-02-15, 15:33:36
+//	Exported by Cearn's GBA Image Transmogrifier, v0.9.2
+//	( http://www.coranac.com/projects/#grit )
+//
+//======================================================================
+
+const unsigned int floor_isoTiles[72] __attribute__((aligned(4))) __attribute__((visibility("hidden")))=
+{
+	0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,
+	0x10000000,0x33100000,0x77771000,0x77777710,0x77777100,0x77710000,0x71000000,0x00000000,
+	0x00000001,0x00000133,0x00013333,0x01333333,0x00133333,0x00001333,0x00000013,0x00000000,
+	0x10000000,0x44100000,0x88881000,0x88888810,0x88888100,0x88810000,0x81000000,0x00000000,
+	0x00000001,0x00000144,0x00014444,0x01444444,0x00144444,0x00001444,0x00000014,0x00000000,
+	0x10000000,0x55100000,0x99991000,0x99999910,0x99999100,0x99910000,0x91000000,0x00000000,
+	0x00000001,0x00000155,0x00015555,0x01555555,0x00155555,0x00001555,0x00000015,0x00000000,
+	0x10000000,0x22100000,0x66661000,0x66666610,0x66666100,0x66610000,0x61000000,0x00000000,
+
+	0x00000001,0x00000122,0x00012222,0x01222222,0x00122222,0x00001222,0x00000012,0x00000000,
+};
+
+const unsigned short floor_isoMetaTiles[10] __attribute__((aligned(4))) __attribute__((visibility("hidden")))=
+{
+	0x0000,0x0000,0x0001,0x0002,0x0003,0x0004,0x0005,0x0006,
+	0x0007,0x0008,
+};
+
+const unsigned short floor_isoMetaMap[4] __attribute__((aligned(4))) __attribute__((visibility("hidden")))=
+{
+	0x0001,0x0002,0x0003,0x0004,
+};
+
+const unsigned short floor_isoPal[16] __attribute__((aligned(4))) __attribute__((visibility("hidden")))=
+{
+	0x0000,0x0023,0x65E7,0x2ACC,0x4A74,0x2E36,0x5565,0x1E6A,
+	0x3DF0,0x21D2,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,
+};
+
+//}}BLOCK(floor_iso)

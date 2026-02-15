@@ -11,7 +11,7 @@ include $(DEVKITARM)/gba_rules
 #---------------------------------------------------------------------------------
 TARGET   := isogame
 BUILD    := build
-SOURCES  := src
+SOURCES  := src data
 INCLUDES := include
 DATA     := data
 
@@ -33,9 +33,10 @@ LIBS     := -L$(DEVKITPRO)/libtonc/lib -ltonc
 #---------------------------------------------------------------------------------
 # File lists
 #---------------------------------------------------------------------------------
-CFILES   := $(wildcard $(SOURCES)/*.c)
-OFILES   := $(patsubst $(SOURCES)/%.c,$(BUILD)/%.o,$(CFILES))
+CFILES   := $(foreach dir,$(SOURCES),$(wildcard $(dir)/*.c))
+OFILES   := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(CFILES)))
 DFILES   := $(OFILES:.o=.d)
+VPATH    := $(SOURCES)
 
 #---------------------------------------------------------------------------------
 # Rules
@@ -52,7 +53,7 @@ $(TARGET).gba: $(TARGET).elf
 $(TARGET).elf: $(OFILES)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-$(BUILD)/%.o: $(SOURCES)/%.c
+$(BUILD)/%.o: %.c
 	$(CC) $(CFLAGS) -MMD -c $< -o $@
 
 $(BUILD):
