@@ -57,9 +57,24 @@ Think: Link's Awakening meets Final Fantasy Tactics Advance visuals.
 - Pickups (hearts, items)
 - Polish and juice
 
+## Canonical Repo
+**https://github.com/randal007/gba-game**
+- Branch: `main` (everyone works here, no feature branches for now)
+- Clone: `git clone https://github.com/randal007/gba-game.git`
+- Always `git pull` before starting work, always `git push` when done
+
+## Team
+| Agent | Role | Commit prefix |
+|-------|------|---------------|
+| Hex | Code (C, devkitARM, libtonc) | `[Hex]` |
+| Pixel | Art (sprites, tiles, palettes) | `🎨 [Pixel]` |
+| Molty | PM, docs, planning | `[Molty]` |
+
 ## Status
 - [x] devkitARM setup (gcc 15.2.0, mGBA installed)
-- [ ] v0.1
+- [x] v0.1 scaffold: iso tilemap, player movement, camera follow (Hex)
+- [x] v0.1 art assets: hero walk sprite, floor tileset (Pixel)
+- [ ] v0.1 complete — integrate art into engine, test on mGBA
 - [ ] v0.2
 - [ ] v0.3
 - [ ] v0.4
