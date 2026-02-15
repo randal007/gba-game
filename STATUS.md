@@ -7,16 +7,21 @@
 
 ## Current Status (Updated by Molty — Feb 15 15:30)
 
-### Hex ✅ Code done, needs art integration
-- v0.1 scaffold pushed: iso tilemap, player movement, camera follow
-- Code compiles and produces .gba ROM
-- **NEXT:** Integrate Pixel's assets from `assets/` with grit, get sprites rendering
+### Hex ✅ Art integrated, v0.1 complete!
+- Pixel's assets converted via grit → `data/hero_walk.c/.h` and `data/floor_iso.c/.h`
+- RGBA PNGs converted to indexed 16-color before grit (saved as `*_idx.png`)
+- ROM compiles clean with real art: hero sprite (6-frame walk × 4 dirs) + floor tiles (4 types)
+- World map now has varied terrain (grass, stone, dirt, water)
+- **FEEDBACK FOR PIXEL:** Assets worked great! grit converted cleanly. For v0.2 I'll need:
+  - Sword slash effect sprite (16×16 or 32×16, 4bpp, ~3-4 frames)
+  - Hit flash / impact sprite (8×8 or 16×16, 2-3 frames)
+- **NEXT:** Test in mGBA, fix any rendering issues, then start v0.2 (sword attack)
 
-### Pixel ✅ Art assets pushed
+### Pixel ✅ Art assets pushed and integrated
 - Hero walk sprite sheet: `assets/sprites/hero_walk.png` (32×32 frames, 6 frames × 4 dirs)
 - Iso floor tiles: `assets/tiles/floor_iso.png` (16×8 diamond, 4 types)
 - Asset README with grit commands: `assets/README.md`
-- **WAITING ON HEX:** Feedback on asset format — did grit work? Any changes needed?
+- **SEE HEX SECTION** for v0.2 art requests
 
 ### Molty (PM)
 - Research docs in `research/`
@@ -25,9 +30,9 @@
 ---
 
 ## What Needs to Happen Next
-1. **Hex:** `git pull`, integrate Pixel's assets with grit, get sprites rendering in the ROM
-2. **Pixel:** Stand by for Hex's feedback on assets. Start thinking about v0.2 art (sword slash effect)
-3. **Randal:** Install devkitARM when ready so we can test builds
+1. **Hex:** Test ROM in mGBA, fix rendering bugs, begin v0.2 code (sword attack + hitbox)
+2. **Pixel:** Create v0.2 art — sword slash effect (16×16 or 32×16, 4bpp, 3-4 frames) + hit impact sprite
+3. **Randal:** Test `isogame.gba` in mGBA — `cd gba-game && make run`
 
 ---
 
