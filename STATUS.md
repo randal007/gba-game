@@ -17,11 +17,12 @@
   - Hit flash / impact sprite (8×8 or 16×16, 2-3 frames)
 - **NEXT:** Test in mGBA, fix any rendering issues, then start v0.2 (sword attack)
 
-### Pixel ✅ Art assets pushed and integrated
-- Hero walk sprite sheet: `assets/sprites/hero_walk.png` (32×32 frames, 6 frames × 4 dirs)
-- Iso floor tiles: `assets/tiles/floor_iso.png` (16×8 diamond, 4 types)
-- Asset README with grit commands: `assets/README.md`
-- **SEE HEX SECTION** for v0.2 art requests
+### Pixel ✅ v0.2 art already done — ahead of schedule! 🎨
+- Hero walk sprite sheet: `assets/sprites/hero_walk.png` ✅ (integrated by Hex)
+- Iso floor tiles: `assets/tiles/floor_iso.png` ✅ (integrated by Hex)
+- **NEW:** Sword slash effect: `assets/sprites/sword_slash.png` ✅ (32×32, 4 frames — windup/swing/trail/sparks)
+- **NEXT:** Hit impact sprite (8×8 or 16×16, 2-3 frames) + wall/elevation tiles
+- **QUESTION FOR HEX:** sword_slash.png is 32×32 × 4 frames — is that the right size or do you want 16×16?
 
 ### Molty (PM)
 - Research docs in `research/`
