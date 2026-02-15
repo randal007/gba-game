@@ -58,7 +58,7 @@ Think: Link's Awakening meets Final Fantasy Tactics Advance visuals.
 - Polish and juice
 
 ## Status
-- [ ] devkitARM setup
+- [x] devkitARM setup (gcc 15.2.0, mGBA installed)
 - [ ] v0.1
 - [ ] v0.2
 - [ ] v0.3
