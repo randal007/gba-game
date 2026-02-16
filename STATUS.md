@@ -7,15 +7,16 @@
 
 ## Current Status (Updated by Molty — Feb 15 15:30)
 
-### Hex ✅ Art integrated, v0.1 complete!
+### Hex ✅ Crash-loop bug FIXED — v0.1 stable! (Feb 16)
+- **BUG FIX:** In Mode 4 bitmap mode, the back framebuffer page (vid_mem_back @ 0x0600A000) overlaps OBJ VRAM charblock 4 (tile_mem[4] @ 0x06010000). Drawing the isometric map to the back page was trampling the hero sprite tiles, causing corruption and crash-loop.
+  - **Fix:** Moved hero tiles from `tile_mem[4]` → `tile_mem[5]` (charblock 5 @ 0x06014000), and offset ATTR2 tile ID by +512. This puts sprite data safely above the framebuffer region.
+  - Hero sprite is now visible and animating correctly.
 - Pixel's assets converted via grit → `data/hero_walk.c/.h` and `data/floor_iso.c/.h`
-- RGBA PNGs converted to indexed 16-color before grit (saved as `*_idx.png`)
-- ROM compiles clean with real art: hero sprite (6-frame walk × 4 dirs) + floor tiles (4 types)
-- World map now has varied terrain (grass, stone, dirt, water)
-- **FEEDBACK FOR PIXEL:** Assets worked great! grit converted cleanly. For v0.2 I'll need:
+- ROM compiles clean, no more crash-loop
+- **FEEDBACK FOR PIXEL:** Assets worked great! For v0.2 I'll need:
   - Sword slash effect sprite (16×16 or 32×16, 4bpp, ~3-4 frames)
   - Hit flash / impact sprite (8×8 or 16×16, 2-3 frames)
-- **NEXT:** Test in mGBA, fix any rendering issues, then start v0.2 (sword attack)
+- **NEXT:** Start v0.2 (sword attack + hitbox)
 
 ### Pixel ✅ v0.2 art already done — ahead of schedule! 🎨
 - Hero walk sprite sheet: `assets/sprites/hero_walk.png` ✅ (integrated by Hex)
