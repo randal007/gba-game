@@ -87,6 +87,35 @@ static inline void m4_plot_page(int x, int y, u8 clr, u16 *page) {
         page[idx] = (page[idx] & 0xFF00) | clr;
 }
 
+// Fast horizontal line in Mode 4 (8bpp packed in 16-bit VRAM)
+static void m4_hline_fast(int x0, int x1, int y, u8 clr, u16 *page) {
+    if ((unsigned)y >= SCREEN_H) return;
+    if (x0 < 0) x0 = 0;
+    if (x1 >= SCREEN_W) x1 = SCREEN_W - 1;
+    if (x0 > x1) return;
+
+    u16 *row = page + y * (SCREEN_W / 2);
+    u16 fill = (u16)clr | ((u16)clr << 8);
+
+    // Handle odd start pixel
+    if (x0 & 1) {
+        row[x0 >> 1] = (row[x0 >> 1] & 0x00FF) | ((u16)clr << 8);
+        x0++;
+        if (x0 > x1) return;
+    }
+    // Handle even end pixel (x1 is inclusive)
+    if (!(x1 & 1)) {
+        row[x1 >> 1] = (row[x1 >> 1] & 0xFF00) | clr;
+        x1--;
+        if (x0 > x1) return;
+    }
+    // Fill aligned middle with 16-bit writes
+    int si = x0 >> 1;
+    int ei = x1 >> 1;
+    for (int i = si; i <= ei; i++)
+        row[i] = fill;
+}
+
 //=============================================================================
 // Draw isometric cube. (sx, sy) = top vertex of the diamond.
 //
@@ -110,25 +139,20 @@ static void draw_iso_cube(int sx, int sy, int type, u16 *page) {
     int hw = ISO_HALF_W;  // 16
     int hh = ISO_HALF_H;  // 8
 
-    // --- TOP FACE ---
-    // Upper half: rows 0..hh-1 (expanding)
+    // --- TOP FACE (upper half: expanding) ---
     for (int dy = 0; dy < hh; dy++) {
-        // At row dy, the diamond spans from center outward
-        // The slope is hw/hh = 2 pixels per row
         int half_span = (dy * hw + hh / 2) / hh;
         int py = sy + dy;
         int x0 = sx - half_span;
         int x1 = sx + half_span;
 
-        // Top edge borders
         m4_plot_page(x0, py, cbr, page);
         m4_plot_page(x1, py, cbr, page);
-
-        for (int x = x0 + 1; x < sx; x++) m4_plot_page(x, py, ctl, page);
-        for (int x = sx; x < x1; x++) m4_plot_page(x, py, ctr, page);
+        if (x0 + 1 < sx) m4_hline_fast(x0 + 1, sx - 1, py, ctl, page);
+        if (sx < x1)     m4_hline_fast(sx, x1 - 1, py, ctr, page);
     }
 
-    // Lower half: rows hh..2*hh-1 (contracting)
+    // --- TOP FACE (lower half: contracting) ---
     for (int dy = 0; dy < hh; dy++) {
         int half_span = ((hh - dy) * hw + hh / 2) / hh;
         int py = sy + hh + dy;
@@ -137,83 +161,39 @@ static void draw_iso_cube(int sx, int sy, int type, u16 *page) {
 
         m4_plot_page(x0, py, cbr, page);
         m4_plot_page(x1, py, cbr, page);
-
-        for (int x = x0 + 1; x < sx; x++) m4_plot_page(x, py, ctl, page);
-        for (int x = sx; x < x1; x++) m4_plot_page(x, py, ctr, page);
+        if (x0 + 1 < sx) m4_hline_fast(x0 + 1, sx - 1, py, ctl, page);
+        if (sx < x1)     m4_hline_fast(sx, x1 - 1, py, ctr, page);
     }
 
-    // --- SIDE FACES ---
-    // Left side: parallelogram from left_vertex to bottom_vertex, dropped by CUBE_SIDE_H
-    // Left vertex = (sx-hw, sy+hh), Bottom vertex = (sx, sy+2*hh)
-    // The top edge of the side is the bottom-left edge of the diamond.
-    // The bottom edge is the same line shifted down by CUBE_SIDE_H.
-    // Left boundary is vertical at x = sx-hw.
-    //
-    // For each row py in [sy+hh, sy+2*hh+CUBE_SIDE_H):
-    //   Top edge x at py: x_top = sx - hw + (py - (sy+hh)) * hw / hh
-    //     (valid for py in [sy+hh, sy+2*hh])
-    //   Bottom edge x at py: x_bot = sx - hw + (py - (sy+hh+CUBE_SIDE_H)) * hw / hh
-    //     (valid for py in [sy+hh+CUBE_SIDE_H, sy+2*hh+CUBE_SIDE_H])
-    //
-    // The side face at row py fills from the bottom edge to the top edge.
-
+    // --- LEFT SIDE FACE ---
     for (int py = sy + hh; py < sy + 2 * hh + CUBE_SIDE_H; py++) {
-        // Top edge (diamond bottom-left edge)
         int dt = py - (sy + hh);
-        int x_top;
-        if (dt <= hh)
-            x_top = sx - hw + (dt * hw) / hh;
-        else
-            x_top = sx;  // past diamond bottom
+        int x_top = (dt <= hh) ? sx - hw + (dt * hw) / hh : sx;
 
-        // Bottom edge (shifted down)
         int db = py - (sy + hh + CUBE_SIDE_H);
         int x_bot;
-        if (db < 0)
-            x_bot = sx - hw;  // before shifted edge starts
-        else if (db <= hh)
-            x_bot = sx - hw + (db * hw) / hh;
-        else
-            continue;  // past the bottom edge
+        if (db < 0)       x_bot = sx - hw;
+        else if (db <= hh) x_bot = sx - hw + (db * hw) / hh;
+        else              continue;
 
-        // Side face fills from x_bot to x_top (x_bot is the left/bottom boundary)
         if (x_bot >= x_top) continue;
-
-        // Vertical left border
         m4_plot_page(x_bot, py, cbr, page);
-        // Bottom diagonal border (only on the shifted edge)
-        if (db >= 0 && db <= hh)
-            m4_plot_page(x_bot, py, cbr, page);
-
-        for (int x = x_bot + 1; x < x_top; x++)
-            m4_plot_page(x, py, csl, page);
+        if (x_bot + 1 < x_top) m4_hline_fast(x_bot + 1, x_top - 1, py, csl, page);
     }
 
-    // Right side: mirror
+    // --- RIGHT SIDE FACE ---
     for (int py = sy + hh; py < sy + 2 * hh + CUBE_SIDE_H; py++) {
         int dt = py - (sy + hh);
-        int x_top;
-        if (dt <= hh)
-            x_top = sx + hw - (dt * hw) / hh;
-        else
-            x_top = sx;
+        int x_top = (dt <= hh) ? sx + hw - (dt * hw) / hh : sx;
 
         int db = py - (sy + hh + CUBE_SIDE_H);
         int x_bot;
-        if (db < 0)
-            x_bot = sx + hw;
-        else if (db <= hh)
-            x_bot = sx + hw - (db * hw) / hh;
-        else
-            continue;
+        if (db < 0)       x_bot = sx + hw;
+        else if (db <= hh) x_bot = sx + hw - (db * hw) / hh;
+        else              continue;
 
-        // Side face fills from x_top to x_bot
         if (x_top >= x_bot) continue;
-
-        for (int x = x_top; x < x_bot; x++)
-            m4_plot_page(x, py, csr, page);
-
-        // Right vertical border
+        if (x_top < x_bot - 1) m4_hline_fast(x_top, x_bot - 1, py, csr, page);
         m4_plot_page(x_bot, py, cbr, page);
     }
 }
@@ -222,8 +202,10 @@ static void draw_iso_cube(int sx, int sy, int type, u16 *page) {
 // Draw the entire iso map (back-to-front)
 //=============================================================================
 static void draw_map(int cam_x, int cam_y, u16 *page) {
+    // Clear to bg color (palette index 0)
     memset16(page, 0, SCREEN_W * SCREEN_H / 2);
 
+    // Draw all tiles back-to-front (type 0 = flat ground, drawn as cubes too)
     for (int row = 0; row < MAP_ROWS; row++) {
         for (int col = 0; col < MAP_COLS; col++) {
             int wx, wy;
@@ -232,8 +214,9 @@ static void draw_map(int cam_x, int cam_y, u16 *page) {
             int sx = wx - cam_x + SCREEN_W / 2;
             int sy = wy - cam_y + SCREEN_H / 2;
 
-            if (sx < -ISO_TILE_W * 2 || sx > SCREEN_W + ISO_TILE_W * 2) continue;
-            if (sy < -ISO_TILE_H * 2 || sy > SCREEN_H + ISO_TILE_H * 2) continue;
+            // Tight culling: skip tiles fully off-screen
+            if (sx < -ISO_HALF_W || sx > SCREEN_W + ISO_HALF_W) continue;
+            if (sy < -ISO_HALF_H || sy > SCREEN_H + ISO_HALF_H + CUBE_SIDE_H) continue;
 
             draw_iso_cube(sx, sy, world_map[row][col], page);
         }
@@ -336,19 +319,24 @@ int main(void) {
     camera.x = player.world_x;
     camera.y = player.world_y;
 
-    u16 *back_page = (u16 *)vid_mem_back;
+    // Manual double-buffering: vid_mem_back is a CONSTANT (always page 1).
+    // We must track the back page ourselves as we flip.
+    int back_id = 1;  // start drawing to page 1 (page 0 is initially displayed)
+    u16 *pages[2] = { (u16 *)MEM_VRAM, (u16 *)MEM_VRAM_BACK };
 
     while (1) {
         key_poll();
         player_update();
         camera_update();
 
-        draw_map(FP2INT(camera.x), FP2INT(camera.y), back_page);
+        draw_map(FP2INT(camera.x), FP2INT(camera.y), pages[back_id]);
         player_draw();
 
         VBlankIntrWait();
-        vid_flip();
-        back_page = (u16 *)vid_mem_back;
+        // Flip display to show what we just drew
+        REG_DISPCNT ^= DCNT_PAGE;
+        // Swap back buffer
+        back_id ^= 1;
         oam_copy(oam_mem, obj_buffer, 2);
     }
 
