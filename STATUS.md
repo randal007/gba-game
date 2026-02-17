@@ -1,6 +1,14 @@
 # GBA Isometric Action Game — Status
 
-## Current Version: v0.2.2
+## Current Version: v0.2.3
+
+### v0.2.3 — Fixed Parallelogram Geometry (2026-02-16)
+- **Fixed incorrect parallelogram side face shape**: v0.2.2's `stamp_side_face()` used a hexagonal/diamond expansion from a point for the top and bottom edges (triangular fill), which wasn't a true parallelogram. Now uses correct 2:1 iso geometry:
+  - **Left face**: top edge runs diagonally from (lx=0, ly=0) to (lx=15, ly=7), matching the diamond's bottom-left edge slope. Each pixel column starts at `ly = lx/2`.
+  - **Right face**: top edge runs diagonally from (lx=0, ly=8) to (lx=15, ly=0), matching the diamond's bottom-right edge slope. Each pixel column starts at `ly = (16-lx)/2`.
+  - Bottom edges are parallel to top edges, offset by `face_h`.
+- **Proper per-pixel parallelogram test**: For each pixel `(lx, ly)`, checks `top_edge <= ly < top_edge + face_h` where `top_edge` follows the 2:1 iso slope. No more triangular expansion/contraction at edges.
+- **Increased MAX_PRECOMP_TILES**: 896→1024 for parallelogram rendering's higher unique tile count.
 
 ### v0.2.2 — Isometric Parallelogram Side Faces (2026-02-16)
 - **Fixed flat rectangular wall faces**: Side faces were rendered as axis-aligned rectangles (straight vertical drop). Now rendered as proper 2:1 isometric parallelograms following the diamond edges — left face slopes down-right, right face slopes down-left, matching FFTA-style iso rendering.

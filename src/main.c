@@ -318,12 +318,6 @@ static void stamp_metatile(int mt_idx, int px, int py) {
 }
 
 //=============================================================================
-// Parallelogram side face stamping for proper isometric walls
-// Each side face is a parallelogram following the 2:1 iso diamond edges.
-// The side texture (32x16) is split: left half (x=0..15) = left face,
-// right half (x=16..31) = right face.
-//=============================================================================
-//=============================================================================
 // Isometric side face: stamp a parallelogram-shaped face into world tilemap.
 // face=0 → left face (slopes down-right following diamond left edge)
 // face=1 → right face (slopes down-left following diamond right edge)
