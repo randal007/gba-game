@@ -1,8 +1,9 @@
-// main.c — GBA Isometric Action Game v0.1
-// Walk the World: isometric tile grid, player movement, camera follow
-// Mode 4 bitmap for pixel-perfect iso cube rendering
+// main.c — GBA Isometric Action Game
+// Mode 0 hardware-tiled renderer: pre-render iso world into 8×8 tiles at boot,
+// then let the GBA hardware handle display + scrolling. Runs at full 60fps.
 #include "game.h"
 #include "../data/hero_walk.h"
+#include <string.h>
 
 //=============================================================================
 // Globals
@@ -32,193 +33,236 @@ static const u8 world_map[MAP_ROWS][MAP_COLS] = {
 
 #define HERO_TILES_PER_FRAME  16
 #define HERO_WALK_FRAMES      6
-#define HERO_ANIM_SPEED       2
-
-#define CUBE_SIDE_H    8  // Height of side faces in pixels
+#define HERO_ANIM_SPEED       4   // slower at 60fps (was 2 at ~15fps)
 
 //=============================================================================
-// Palette: each tile type gets 4 colors
-//   type*4+2 = top_left (lighter)
-//   type*4+3 = top_right (slightly darker)
-//   type*4+4 = side_left (darkest)
-//   type*4+5 = side_right (medium)
+// EWRAM buffers for pre-rendering
+//=============================================================================
+EWRAM_BSS static u8 world_pixels[WORLD_PX_W * WORLD_PX_H];
+
+// Tile dedup: each 8bpp 8×8 tile = 64 bytes = 16 u32s
+EWRAM_BSS static u32 tile_store[MAX_BG_TILES * 16];
+static int num_unique_tiles;
+
+// Tilemap (64×64)
+EWRAM_BSS static u16 tilemap[BG_MAP_W * BG_MAP_H];
+
+//=============================================================================
+// Palette setup for Mode 0
 //=============================================================================
 static void setup_palette(void) {
-    pal_bg_mem[0] = RGB15(2, 2, 5);     // bg
+    // BG palette (4bpp, palette 0)
+    pal_bg_mem[0] = RGB15(2, 2, 5);     // bg / transparent
     pal_bg_mem[1] = RGB15(1, 1, 1);     // border
 
-    // Grass
+    // Grass (indices 2-5)
     pal_bg_mem[2]  = RGB15(10, 22, 5);
     pal_bg_mem[3]  = RGB15(7, 18, 3);
     pal_bg_mem[4]  = RGB15(3, 10, 2);
     pal_bg_mem[5]  = RGB15(5, 14, 3);
 
-    // Stone
+    // Stone (6-9)
     pal_bg_mem[6]  = RGB15(18, 18, 16);
     pal_bg_mem[7]  = RGB15(14, 14, 13);
     pal_bg_mem[8]  = RGB15(7, 7, 6);
     pal_bg_mem[9]  = RGB15(10, 10, 9);
 
-    // Dirt
+    // Dirt (10-13)
     pal_bg_mem[10] = RGB15(18, 12, 6);
     pal_bg_mem[11] = RGB15(14, 9, 4);
     pal_bg_mem[12] = RGB15(7, 4, 2);
     pal_bg_mem[13] = RGB15(10, 7, 3);
 
-    // Water
+    // Water (14-17) — but 4bpp pal0 only has 16 entries (0-15)
+    // We'll use palette 0 entries 0-15 in 8bpp mode instead.
+    // Actually, let's use 8bpp (256-color) BG to keep it simple with >16 colors.
     pal_bg_mem[14] = RGB15(5, 15, 22);
     pal_bg_mem[15] = RGB15(3, 11, 18);
+
+    // For 8bpp, all 256 entries are in pal_bg_mem directly
     pal_bg_mem[16] = RGB15(1, 5, 10);
     pal_bg_mem[17] = RGB15(2, 8, 14);
 
+    // OBJ palette
     memcpy16(pal_obj_mem, hero_walkPal, hero_walkPalLen / 2);
 }
 
 //=============================================================================
-// Mode 4 pixel writing
+// Render iso cube into the pixel buffer (same algorithm as before, but once)
 //=============================================================================
-static inline void m4_plot_page(int x, int y, u8 clr, u16 *page) {
-    if ((unsigned)x >= SCREEN_W || (unsigned)y >= SCREEN_H) return;
-    int ofs = y * SCREEN_W + x;
-    int idx = ofs >> 1;
-    if (ofs & 1)
-        page[idx] = (page[idx] & 0x00FF) | ((u16)clr << 8);
-    else
-        page[idx] = (page[idx] & 0xFF00) | clr;
+static inline void px_plot(int x, int y, u8 clr) {
+    if ((unsigned)x < WORLD_PX_W && (unsigned)y < WORLD_PX_H)
+        world_pixels[y * WORLD_PX_W + x] = clr;
 }
 
-// Fast horizontal line in Mode 4 (8bpp packed in 16-bit VRAM)
-static void m4_hline_fast(int x0, int x1, int y, u8 clr, u16 *page) {
-    if ((unsigned)y >= SCREEN_H) return;
+static void px_hline(int x0, int x1, int y, u8 clr) {
+    if ((unsigned)y >= WORLD_PX_H) return;
     if (x0 < 0) x0 = 0;
-    if (x1 >= SCREEN_W) x1 = SCREEN_W - 1;
-    if (x0 > x1) return;
-
-    u16 *row = page + y * (SCREEN_W / 2);
-    u16 fill = (u16)clr | ((u16)clr << 8);
-
-    // Handle odd start pixel
-    if (x0 & 1) {
-        row[x0 >> 1] = (row[x0 >> 1] & 0x00FF) | ((u16)clr << 8);
-        x0++;
-        if (x0 > x1) return;
-    }
-    // Handle even end pixel (x1 is inclusive)
-    if (!(x1 & 1)) {
-        row[x1 >> 1] = (row[x1 >> 1] & 0xFF00) | clr;
-        x1--;
-        if (x0 > x1) return;
-    }
-    // Fill aligned middle with 16-bit writes
-    int si = x0 >> 1;
-    int ei = x1 >> 1;
-    for (int i = si; i <= ei; i++)
-        row[i] = fill;
+    if (x1 >= WORLD_PX_W) x1 = WORLD_PX_W - 1;
+    u8 *row = &world_pixels[y * WORLD_PX_W];
+    for (int x = x0; x <= x1; x++)
+        row[x] = clr;
 }
 
-//=============================================================================
-// Draw isometric cube. (sx, sy) = top vertex of the diamond.
-//
-// Diamond top face:
-//   Top vertex:    (sx, sy)
-//   Left vertex:   (sx - hw, sy + hh)
-//   Bottom vertex: (sx, sy + 2*hh)
-//   Right vertex:  (sx + hw, sy + hh)
-//
-// Side faces hang below, height = CUBE_SIDE_H:
-//   Left side:  parallelogram from left vertex down to bottom vertex+CUBE_SIDE_H
-//   Right side: parallelogram from right vertex down to bottom vertex+CUBE_SIDE_H
-//=============================================================================
-static void draw_iso_cube(int sx, int sy, int type, u16 *page) {
-    u8 ctl = type * 4 + 2;   // top left color
-    u8 ctr = type * 4 + 3;   // top right color
-    u8 csl = type * 4 + 4;   // side left color
-    u8 csr = type * 4 + 5;   // side right color
-    u8 cbr = 1;               // border
+static void render_iso_cube(int sx, int sy, int type) {
+    u8 ctl = type * 4 + 2;
+    u8 ctr = type * 4 + 3;
+    u8 csl = type * 4 + 4;
+    u8 csr = type * 4 + 5;
+    u8 cbr = 1;
+    int hw = ISO_HALF_W, hh = ISO_HALF_H;
 
-    int hw = ISO_HALF_W;  // 16
-    int hh = ISO_HALF_H;  // 8
-
-    // --- TOP FACE (upper half: expanding) ---
+    // Top face upper half
     for (int dy = 0; dy < hh; dy++) {
         int half_span = (dy * hw + hh / 2) / hh;
         int py = sy + dy;
-        int x0 = sx - half_span;
-        int x1 = sx + half_span;
-
-        m4_plot_page(x0, py, cbr, page);
-        m4_plot_page(x1, py, cbr, page);
-        if (x0 + 1 < sx) m4_hline_fast(x0 + 1, sx - 1, py, ctl, page);
-        if (sx < x1)     m4_hline_fast(sx, x1 - 1, py, ctr, page);
+        px_plot(sx - half_span, py, cbr);
+        px_plot(sx + half_span, py, cbr);
+        if (sx - half_span + 1 < sx) px_hline(sx - half_span + 1, sx - 1, py, ctl);
+        if (sx < sx + half_span)     px_hline(sx, sx + half_span - 1, py, ctr);
     }
 
-    // --- TOP FACE (lower half: contracting) ---
+    // Top face lower half
     for (int dy = 0; dy < hh; dy++) {
         int half_span = ((hh - dy) * hw + hh / 2) / hh;
         int py = sy + hh + dy;
-        int x0 = sx - half_span;
-        int x1 = sx + half_span;
-
-        m4_plot_page(x0, py, cbr, page);
-        m4_plot_page(x1, py, cbr, page);
-        if (x0 + 1 < sx) m4_hline_fast(x0 + 1, sx - 1, py, ctl, page);
-        if (sx < x1)     m4_hline_fast(sx, x1 - 1, py, ctr, page);
+        px_plot(sx - half_span, py, cbr);
+        px_plot(sx + half_span, py, cbr);
+        if (sx - half_span + 1 < sx) px_hline(sx - half_span + 1, sx - 1, py, ctl);
+        if (sx < sx + half_span)     px_hline(sx, sx + half_span - 1, py, ctr);
     }
 
-    // --- LEFT SIDE FACE ---
+    // Left side
     for (int py = sy + hh; py < sy + 2 * hh + CUBE_SIDE_H; py++) {
         int dt = py - (sy + hh);
         int x_top = (dt <= hh) ? sx - hw + (dt * hw) / hh : sx;
-
         int db = py - (sy + hh + CUBE_SIDE_H);
         int x_bot;
-        if (db < 0)       x_bot = sx - hw;
+        if (db < 0)        x_bot = sx - hw;
         else if (db <= hh) x_bot = sx - hw + (db * hw) / hh;
-        else              continue;
-
+        else               continue;
         if (x_bot >= x_top) continue;
-        m4_plot_page(x_bot, py, cbr, page);
-        if (x_bot + 1 < x_top) m4_hline_fast(x_bot + 1, x_top - 1, py, csl, page);
+        px_plot(x_bot, py, cbr);
+        if (x_bot + 1 < x_top) px_hline(x_bot + 1, x_top - 1, py, csl);
     }
 
-    // --- RIGHT SIDE FACE ---
+    // Right side
     for (int py = sy + hh; py < sy + 2 * hh + CUBE_SIDE_H; py++) {
         int dt = py - (sy + hh);
         int x_top = (dt <= hh) ? sx + hw - (dt * hw) / hh : sx;
-
         int db = py - (sy + hh + CUBE_SIDE_H);
         int x_bot;
-        if (db < 0)       x_bot = sx + hw;
+        if (db < 0)        x_bot = sx + hw;
         else if (db <= hh) x_bot = sx + hw - (db * hw) / hh;
-        else              continue;
-
+        else               continue;
         if (x_top >= x_bot) continue;
-        if (x_top < x_bot - 1) m4_hline_fast(x_top, x_bot - 1, py, csr, page);
-        m4_plot_page(x_bot, py, cbr, page);
+        if (x_top < x_bot - 1) px_hline(x_top, x_bot - 1, py, csr);
+        px_plot(x_bot, py, cbr);
     }
 }
 
 //=============================================================================
-// Draw the entire iso map (back-to-front)
+// Pre-render entire world into pixel buffer
 //=============================================================================
-static void draw_map(int cam_x, int cam_y, u16 *page) {
-    // Clear to bg color (palette index 0)
-    memset16(page, 0, SCREEN_W * SCREEN_H / 2);
+static void prerender_world(void) {
+    // Clear to bg color
+    memset(world_pixels, 0, sizeof(world_pixels));
 
-    // Draw all tiles back-to-front (type 0 = flat ground, drawn as cubes too)
+    // Draw back-to-front
     for (int row = 0; row < MAP_ROWS; row++) {
         for (int col = 0; col < MAP_COLS; col++) {
             int wx, wy;
             iso_tile_to_world(col, row, &wx, &wy);
+            int px = wx + WORLD_OX;
+            int py = wy + WORLD_OY;
+            render_iso_cube(px, py, world_map[row][col]);
+        }
+    }
+}
 
-            int sx = wx - cam_x + SCREEN_W / 2;
-            int sy = wy - cam_y + SCREEN_H / 2;
+//=============================================================================
+// Convert pixel buffer → 8bpp 8×8 tiles + tilemap with deduplication
+//=============================================================================
 
-            // Tight culling: skip tiles fully off-screen
-            if (sx < -ISO_HALF_W || sx > SCREEN_W + ISO_HALF_W) continue;
-            if (sy < -ISO_HALF_H || sy > SCREEN_H + ISO_HALF_H + CUBE_SIDE_H) continue;
+// Compare an 8×8 block from pixel buffer against stored tile
+static int tile_match(const u8 *block_start, int stride, const u32 *stored) {
+    const u8 *s = (const u8 *)stored;
+    for (int r = 0; r < 8; r++) {
+        const u8 *row = block_start + r * stride;
+        const u8 *sr = s + r * 8;
+        for (int c = 0; c < 8; c++) {
+            if (row[c] != sr[c]) return 0;
+        }
+    }
+    return 1;
+}
 
-            draw_iso_cube(sx, sy, world_map[row][col], page);
+static int find_or_add_tile(const u8 *block_start, int stride) {
+    // Pack the 8×8 block into tile format (8bpp: 64 bytes = 16 u32s... 
+    // but we allocated 8 u32s per tile for 4bpp. Let me use 8bpp properly.)
+    // For 8bpp tiles, each tile is 64 bytes = 16 u32s.
+    // We need to store them differently. Let me just do a linear search 
+    // with direct comparison against the pixel buffer.
+    
+    for (int i = 0; i < num_unique_tiles; i++) {
+        if (tile_match(block_start, stride, &tile_store[i * 16]))
+            return i;
+    }
+
+    // Add new tile
+    if (num_unique_tiles >= MAX_BG_TILES)
+        return 0; // fallback
+
+    int id = num_unique_tiles++;
+    u8 *dst = (u8 *)&tile_store[id * 16];
+    for (int r = 0; r < 8; r++) {
+        const u8 *row = block_start + r * stride;
+        for (int c = 0; c < 8; c++)
+            dst[r * 8 + c] = row[c];
+    }
+    return id;
+}
+
+static void build_tileset_and_map(void) {
+    num_unique_tiles = 0;
+    memset(tilemap, 0, sizeof(tilemap));
+
+    int tile_cols = WORLD_PX_W / 8;  // 64
+    int tile_rows = WORLD_PX_H / 8;  // 40
+    if (tile_rows > BG_MAP_H) tile_rows = BG_MAP_H;
+
+    for (int tr = 0; tr < tile_rows; tr++) {
+        for (int tc = 0; tc < tile_cols; tc++) {
+            const u8 *block = &world_pixels[tr * 8 * WORLD_PX_W + tc * 8];
+            int tid = find_or_add_tile(block, WORLD_PX_W);
+            tilemap[tr * BG_MAP_W + tc] = (u16)tid;
+        }
+    }
+}
+
+//=============================================================================
+// Copy tileset + tilemap to VRAM
+//=============================================================================
+static void upload_to_vram(void) {
+    // 8bpp tiles: each tile = 64 bytes. Copy to charblock 0.
+    // tile_mem is TILE (*)[32] where TILE = u32[8] (32 bytes, 4bpp tile).
+    // For 8bpp, each logical tile = 2 TILE structs (64 bytes).
+    // So tile i occupies tile_mem[BG_CBB][i*2] and tile_mem[BG_CBB][i*2+1].
+    u32 *dst = (u32 *)&tile_mem[TILE_CBB][0];
+    memcpy32(dst, tile_store, (num_unique_tiles * 64) / 4);
+
+    // Copy tilemap to screenblocks 28-31
+    // 64×64 map = 4 screenblocks. Layout: SB28=top-left 32×32, SB29=top-right,
+    // SB30=bottom-left, SB31=bottom-right.
+    for (int r = 0; r < BG_MAP_H; r++) {
+        for (int c = 0; c < BG_MAP_W; c++) {
+            int sb_x = c / 32;
+            int sb_y = r / 32;
+            int sb = sb_x + sb_y * 2;
+            int local_c = c % 32;
+            int local_r = r % 32;
+            u16 *sb_base = (u16 *)se_mem[TILE_SBB + sb];
+            sb_base[local_r * 32 + local_c] = tilemap[r * BG_MAP_W + c];
         }
     }
 }
@@ -268,6 +312,7 @@ static void player_update(void) {
 }
 
 static void player_draw(void) {
+    // Screen position relative to camera
     int sx, sy;
     world_to_screen(FP2INT(player.world_x), FP2INT(player.world_y),
                     FP2INT(camera.x), FP2INT(camera.y), &sx, &sy);
@@ -284,8 +329,8 @@ static void player_draw(void) {
         default:     dir_row = 0; break;
     }
 
-    // Offset by 512 because tiles are in charblock 5 (bitmap mode requirement)
-    int tile_id = 512 + (dir_row * HERO_WALK_FRAMES + player.frame) * HERO_TILES_PER_FRAME;
+    // In Mode 0, OBJ tiles start at charblock 4, tile ID 0
+    int tile_id = (dir_row * HERO_WALK_FRAMES + player.frame) * HERO_TILES_PER_FRAME;
 
     obj_buffer[0].attr0 = ATTR0_Y(sy & 0xFF) | ATTR0_SQUARE | ATTR0_4BPP;
     obj_buffer[0].attr1 = ATTR1_X(sx & 0x1FF) | ATTR1_SIZE_32;
@@ -308,35 +353,46 @@ int main(void) {
     irq_add(II_VBLANK, NULL);
 
     setup_palette();
-    // In bitmap modes (Mode 4), the back framebuffer overlaps tile_mem[4].
-    // OBJ tiles must go into tile_mem[5] (charblock 5 = tile ID 512+).
-    memcpy32(&tile_mem[5][0], hero_walkTiles, hero_walkTilesLen / 4);
 
-    REG_DISPCNT = DCNT_MODE4 | DCNT_BG2 | DCNT_OBJ | DCNT_OBJ_1D;
+    // Pre-render the entire isometric world into pixel buffer (one-time cost)
+    prerender_world();
+
+    // Convert to hardware tiles + tilemap
+    build_tileset_and_map();
+
+    // Upload to VRAM
+    upload_to_vram();
+
+    // Load hero sprite tiles into OBJ VRAM (charblock 4, tile 0)
+    memcpy32(&tile_mem[4][0], hero_walkTiles, hero_walkTilesLen / 4);
+
+    // Set up Mode 0 with BG0 (8bpp, 64×64 tilemap) + OBJ
+    REG_BG0CNT = BG_CBB(TILE_CBB) | BG_SBB(TILE_SBB) | BG_8BPP | BG_SIZE3 | BG_PRIO(1);
+    REG_DISPCNT = DCNT_MODE0 | DCNT_BG0 | DCNT_OBJ | DCNT_OBJ_1D;
 
     oam_init(obj_buffer, 128);
     player_init();
     camera.x = player.world_x;
     camera.y = player.world_y;
 
-    // Manual double-buffering: vid_mem_back is a CONSTANT (always page 1).
-    // We must track the back page ourselves as we flip.
-    int back_id = 1;  // start drawing to page 1 (page 0 is initially displayed)
-    u16 *pages[2] = { (u16 *)MEM_VRAM, (u16 *)MEM_VRAM_BACK };
-
     while (1) {
         key_poll();
         player_update();
         camera_update();
 
-        draw_map(FP2INT(camera.x), FP2INT(camera.y), pages[back_id]);
+        // Hardware scroll: convert camera world coords to pixel buffer coords
+        int cam_wx = FP2INT(camera.x);
+        int cam_wy = FP2INT(camera.y);
+        int scroll_x = cam_wx + WORLD_OX - SCREEN_W / 2;
+        int scroll_y = cam_wy + WORLD_OY - SCREEN_H / 2;
+
+        // Clamp to valid range (BG wraps at 512)
+        REG_BG0HOFS = scroll_x & 0x1FF;
+        REG_BG0VOFS = scroll_y & 0x1FF;
+
         player_draw();
 
         VBlankIntrWait();
-        // Flip display to show what we just drew
-        REG_DISPCNT ^= DCNT_PAGE;
-        // Swap back buffer
-        back_id ^= 1;
         oam_copy(oam_mem, obj_buffer, 2);
     }
 

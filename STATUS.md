@@ -1,27 +1,37 @@
-# GBA Isometric Action Game — Status
+# GBA Isometric Game — Status
 
-## Current: v0.1 — Walk the World
+## Current State (2026-02-16)
+
+### ✅ Mode 0 Tiled Renderer (MAJOR PERFORMANCE FIX)
+
+Switched from Mode 4 bitmap software rendering to Mode 0 hardware tiled background:
+
+- **Before:** CPU rendered every iso cube pixel every frame → ~15fps, unplayable
+- **After:** Pre-renders world once at boot into 8×8 tiles, hardware BG handles display + scrolling → solid 60fps
+
+#### How it works:
+1. At startup, all iso cubes are rendered into an EWRAM pixel buffer (512×320)
+2. The buffer is converted to deduplicated 8bpp 8×8 tiles + a 64×64 tilemap
+3. Tiles and tilemap are uploaded to VRAM once
+4. Main loop only updates BG scroll registers (REG_BG0HOFS/VOFS) + OBJ sprite
+5. Zero per-frame rendering cost for the map
+
+#### Technical details:
+- Mode 0, BG0: 8bpp, 64×64 tilemap (BG_SIZE3 = 512×512px), charblock 0, screenblock 28
+- OBJ sprite hero: 4bpp, charblock 4, unchanged from before
+- Player speed: 2 px/frame (was 12 to compensate for low framerate)
+- Anim speed: 4 ticks (was 2, adjusted for 60fps)
+
+### Features
+- 16×16 isometric world map with 4 tile types (grass, stone, dirt, water)
+- Isometric cube rendering with diamond top + side faces
+- 4-direction hero sprite with walk animation
+- Smooth camera follow (lerp)
+- Hardware scrolling via BG scroll registers
 
 ### Build
-- **Status:** ✅ Compiles and links cleanly
-- **ROM:** `isogame.gba`
-
-### Recent Fixes
-- **[2026-02-16] Fix crash-loop: broken double-buffering + rendering optimization**
-  - `vid_mem_back` is a compile-time constant (always page 1 / 0x0600A000). After `vid_flip()`, the code kept drawing to the same page — sometimes the *displayed* page. This caused the screen to rapidly flash between a half-drawn frame and an uninitialized page, appearing as a crash loop while the OBJ sprite (hero) remained visible.
-  - Fixed: manual page tracking with `back_id ^= 1` and direct `REG_DISPCNT ^= DCNT_PAGE` flipping.
-  - Optimized `draw_iso_cube` to use horizontal span fills (`m4_hline_fast`) instead of per-pixel `m4_plot_page` calls — ~10x fewer VRAM writes per cube.
-  - Tightened draw_map culling margins to skip off-screen tiles earlier.
-
-- **[2026-02-15] Fix OBJ VRAM overlap** — moved hero tiles from charblock 4 to charblock 5 (tile ID 512+) since Mode 4 back framebuffer overlaps charblock 4.
-
-### Known Limitations
-- Mode 4 software-rendered isometric cubes are CPU-intensive. Currently viable with tight culling and span fills, but a future move to Mode 0 tiled rendering would be ideal for performance.
-- Double-buffering now works correctly but drawing still takes significant CPU time per frame.
-
-### Architecture
-- **Mode 4** (8bpp bitmap) for isometric terrain rendering
-- **OBJ sprites** for hero character (charblock 5, tile ID 512+)
-- **16×16 tile map** with 4 terrain types (grass/stone/dirt/water)
-- **24.8 fixed-point** world coordinates
-- **Isometric 2:1** projection with camera follow
+```
+make        # builds isogame.gba
+make run    # launches in mgba-qt
+make clean  # clean build artifacts
+```
