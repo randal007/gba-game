@@ -2,6 +2,31 @@
 
 ## Current State (2026-02-16)
 
+### ✅ v0.2 Stackable Isometric Tile Assets (NEW)
+
+Created FFTA-style isometric tiles designed for height/elevation stacking system.
+All tiles are 4bpp indexed PNGs, grit-compatible, in `assets/tiles/`.
+
+**Ground tiles (32×16 iso diamond, top face):**
+- `ground_grass.png` — Lush green with subtle tuft highlights
+- `ground_stone.png` — Grey stone with crack details
+- `ground_dirt.png` — Warm brown earth with pebble texture
+- `ground_water.png` — Blue with wave pattern and sparkle highlights
+- `ground_roof.png` — Red-orange clay roof with ridge lines
+
+**Side/wall tiles (32×16, left+right vertical faces):**
+- `side_grass_edge.png` — Grass roots on top, dirt/earth cross-section below
+- `side_stone_wall.png` — Brick-pattern stone with mortar lines
+- `side_dirt_wall.png` — Layered earth strata
+- `side_brick_wall.png` — Building brick wall with mortar
+- `side_roof_edge.png` — Roof eave/overhang edge
+
+**Stacking system:** Each side tile has left face (darker) and right face (lighter) split at center. Top faces are bright/detailed, sides are darker per FFTA style. Side tiles tile vertically without seams for arbitrary cliff heights.
+
+**Palettes:** 6 palettes (grass, stone, dirt, water, brick, roof), each ≤16 colors, FFTA warm color style with dark brown outlines (#1a0c00).
+
+**Generator script:** `assets/tiles/gen_tiles.py` — can regenerate/modify all tiles.
+
 ### ✅ Side-Scroller World with Tilemap Streaming
 
 Changed from 16×16 diamond world to **200×16 long strip** with sliding-window renderer:
