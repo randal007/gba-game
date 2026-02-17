@@ -1,4 +1,4 @@
-// game.h — Core game types and constants (Mode 0 tiled renderer)
+// game.h — Core game types and constants (Mode 0 tiled renderer + tilemap streaming)
 #ifndef GAME_H
 #define GAME_H
 
@@ -20,30 +20,38 @@
 #define CUBE_SIDE_H  8     // Height of side faces
 
 //=============================================================================
-// Map
+// Map — long side-scroller strip
 //=============================================================================
-#define MAP_COLS     16
+#define MAP_COLS     200
 #define MAP_ROWS     16
 
-//=============================================================================
-// Pre-rendered world pixel buffer dimensions
-// World x range: (col-row)*16, col/row 0..15 → -240..240, +offset 256 → 16..496
-// World y range: (col+row)*8, 0..240, +cube bottom +24 → 0..264, +offset 16 → 16..280
-// Use 512×320, fits in 512×512 BG
-//=============================================================================
-#define WORLD_PX_W   512
-#define WORLD_PX_H   320
-#define WORLD_OX     256   // pixel offset for x (makes all coords positive)
-#define WORLD_OY     16    // pixel offset for y
+// Tile types
+#define TILE_GRASS   0
+#define TILE_STONE   1
+#define TILE_DIRT    2
+#define TILE_WATER   3
 
-// Tilemap: 64×40 tiles covers 512×320 pixels, but BG is 64×64 (512×512)
+//=============================================================================
+// Sliding render window
+// The pixel buffer is 512×320, representing a window into world-pixel-space.
+// When the camera drifts too far from window center, we re-render.
+//=============================================================================
+#define WIN_PX_W     512
+#define WIN_PX_H     320
+#define WIN_HALF_W   (WIN_PX_W / 2)   // 256
+#define WIN_HALF_H   (WIN_PX_H / 2)   // 160
+
+// Re-render when camera drifts this far from window center
+#define RERENDER_THRESHOLD  80
+
+// Tilemap: 64×64 tiles for BG_SIZE3 (512×512)
 #define BG_MAP_W     64
 #define BG_MAP_H     64
 
 // VRAM layout
 #define TILE_CBB     0     // charblock for BG tiles
 #define TILE_SBB     28    // screenblock for tilemap (64×64 uses SBB 28-31)
-#define MAX_BG_TILES 896   // max unique 8×8 tiles (limited by VRAM: tiles end before SBB28)
+#define MAX_BG_TILES 896   // max unique 8×8 tiles
 
 //=============================================================================
 // Fixed-point (24.8)
@@ -64,9 +72,9 @@ enum {
 };
 
 //=============================================================================
-// Player — speed tuned for 60fps now!
+// Player
 //=============================================================================
-#define PLAYER_SPEED     (FP_ONE * 1)   // 1 pixel/frame at 60fps
+#define PLAYER_SPEED     (FP_ONE * 1)
 #define PLAYER_SPR_W     32
 #define PLAYER_SPR_H     32
 
@@ -99,5 +107,16 @@ static inline void world_to_screen(int wx, int wy, int cam_x, int cam_y, int *sx
     *sx = wx - cam_x + SCREEN_W / 2;
     *sy = wy - cam_y + SCREEN_H / 2;
 }
+
+//=============================================================================
+// World pixel extent helpers
+// For MAP_COLS=200, MAP_ROWS=16:
+//   wx range: (0-15)*16=-240  to  (199-0)*16=3184
+//   wy range: (0+0)*8=0       to  (199+15)*8=1712
+//=============================================================================
+#define WORLD_WX_MIN  ((0 - (MAP_ROWS-1)) * ISO_HALF_W)       // -240
+#define WORLD_WX_MAX  (((MAP_COLS-1) - 0) * ISO_HALF_W)       //  3184
+#define WORLD_WY_MIN  0
+#define WORLD_WY_MAX  (((MAP_COLS-1) + (MAP_ROWS-1)) * ISO_HALF_H + 2*ISO_HALF_H + CUBE_SIDE_H)
 
 #endif // GAME_H

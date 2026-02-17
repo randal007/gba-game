@@ -2,32 +2,42 @@
 
 ## Current State (2026-02-16)
 
-### ✅ Mode 0 Tiled Renderer (MAJOR PERFORMANCE FIX)
+### ✅ Side-Scroller World with Tilemap Streaming
 
-Switched from Mode 4 bitmap software rendering to Mode 0 hardware tiled background:
+Changed from 16×16 diamond world to **200×16 long strip** with sliding-window renderer:
 
-- **Before:** CPU rendered every iso cube pixel every frame → ~15fps, unplayable
-- **After:** Pre-renders world once at boot into 8×8 tiles, hardware BG handles display + scrolling → solid 60fps
+- **World:** 200 tiles wide × 16 tiles tall — a long side-scrolling isometric strip
+- **Renderer:** Sliding-window tilemap streaming. A 512×320 pixel buffer covers the visible area + margin. When the camera drifts >80px from window center, the visible portion is re-rendered, converted to tiles, and uploaded to VRAM.
+- **Terrain:** Procedurally generated with varied features along the strip:
+  - Winding stone road through the middle
+  - River crossing (cols 40-55)
+  - Small pond (cols 70-75)
+  - Large lake (cols 100-115)
+  - Desert/dirt region (cols 130-160)
+  - Stone fortress at the far right (cols 175-195)
+  - Scattered stone clusters and dirt trails
+- **Player spawn:** Left side of the world (col 3, row 8)
+- **Camera:** Follows player with lerp, clamped to world edges — no wrapping
+- **Player bounds:** Clamped to world edges — cannot walk off the map
 
-#### How it works:
-1. At startup, all iso cubes are rendered into an EWRAM pixel buffer (512×320)
-2. The buffer is converted to deduplicated 8bpp 8×8 tiles + a 64×64 tilemap
-3. Tiles and tilemap are uploaded to VRAM once
-4. Main loop only updates BG scroll registers (REG_BG0HOFS/VOFS) + OBJ sprite
-5. Zero per-frame rendering cost for the map
+### Architecture
+- Mode 0, BG0: 8bpp, 64×64 tilemap (512×512px BG), charblock 0, screenblock 28
+- OBJ sprite hero: 4bpp, charblock 4
+- World map generated procedurally at startup into EWRAM
+- Sliding window re-renders only when camera drifts past threshold (not every frame)
+- Tile deduplication keeps unique tile count within VRAM limits
 
-#### Technical details:
-- Mode 0, BG0: 8bpp, 64×64 tilemap (BG_SIZE3 = 512×512px), charblock 0, screenblock 28
-- OBJ sprite hero: 4bpp, charblock 4, unchanged from before
-- Player speed: 2 px/frame (was 12 to compensate for low framerate)
-- Anim speed: 4 ticks (was 2, adjusted for 60fps)
+### Previous: Mode 0 Tiled Renderer
+- Pre-rendered entire 16×16 world once at boot into 512×320 pixel buffer
+- Converted to deduplicated 8bpp tiles + 64×64 tilemap
+- Achieved 60fps via hardware BG scrolling
 
 ### Features
-- 16×16 isometric world map with 4 tile types (grass, stone, dirt, water)
+- 200×16 isometric world with 4 tile types (grass, stone, dirt, water)
 - Isometric cube rendering with diamond top + side faces
 - 4-direction hero sprite with walk animation
-- Smooth camera follow (lerp)
-- Hardware scrolling via BG scroll registers
+- Smooth camera follow (lerp) with edge clamping
+- Tilemap streaming for worlds larger than 512×512px hardware limit
 
 ### Build
 ```
