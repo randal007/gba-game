@@ -282,13 +282,33 @@ static void player_init(void) {
 }
 
 static void player_update(void) {
-    int dx = 0, dy = 0;
+    // Movement along isometric axes:
+    // Each d-pad direction moves along ONE iso axis (tile-aligned).
+    // Pressing two adjacent directions moves along the screen axis (true diagonal).
+    int iso_dx = 0, iso_dy = 0;
 
-    if (key_is_down(KEY_RIGHT)) { dx += 1; dy += 1; player.facing = DIR_SE; }
-    if (key_is_down(KEY_LEFT))  { dx -= 1; dy -= 1; player.facing = DIR_NW; }
-    if (key_is_down(KEY_UP))    { dx += 1; dy -= 1; player.facing = DIR_NE; }
-    if (key_is_down(KEY_DOWN))  { dx -= 1; dy += 1; player.facing = DIR_SW; }
+    // RIGHT = move along iso X+ axis (screen: down-right along tile row)
+    if (key_is_down(KEY_RIGHT)) { iso_dx += 1; player.facing = DIR_SE; }
+    // LEFT  = move along iso X- axis (screen: up-left along tile row)
+    if (key_is_down(KEY_LEFT))  { iso_dx -= 1; player.facing = DIR_NW; }
+    // UP    = move along iso Y- axis (screen: up-right along tile col)
+    if (key_is_down(KEY_UP))    { iso_dy -= 1; player.facing = DIR_NE; }
+    // DOWN  = move along iso Y+ axis (screen: down-left along tile col)
+    if (key_is_down(KEY_DOWN))  { iso_dy += 1; player.facing = DIR_SW; }
 
+    // Handle combined presses (diagonal facing)
+    if (iso_dx > 0 && iso_dy < 0) player.facing = DIR_NE;
+    if (iso_dx > 0 && iso_dy > 0) player.facing = DIR_SE;
+    if (iso_dx < 0 && iso_dy < 0) player.facing = DIR_NW;
+    if (iso_dx < 0 && iso_dy > 0) player.facing = DIR_SW;
+
+    // Convert iso movement to world-space:
+    // iso X axis in world = (+1, +1) (right = col+1)
+    // iso Y axis in world = (-1, +1) (down = row+1)
+    int dx = iso_dx - iso_dy;  // world X
+    int dy = iso_dx + iso_dy;  // world Y
+
+    // Normalize if moving diagonally (two d-pad buttons)
     if (dx != 0 && dy != 0) {
         player.world_x += (dx * PLAYER_SPEED * 181) >> 8;
         player.world_y += (dy * PLAYER_SPEED * 181) >> 8;
