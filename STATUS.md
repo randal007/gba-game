@@ -1,6 +1,12 @@
 # GBA Isometric Action Game — Status
 
-## Current Version: v0.2
+## Current Version: v0.2.1
+
+### v0.2.1 — Transparency Fix (2026-02-16)
+- **Fixed magenta bleed bug**: Source tile PNGs used opaque magenta (255,0,255) as transparency key, but the converter only checked alpha channel. Magenta pixels were assigned palette index 1 and rendered visibly between diamond tiles.
+- **convert_tiles.py**: Now treats both alpha < 128 AND opaque magenta (R≥240, G<16, B≥240) as transparent (palette index 0). Magenta removed from palette entirely (52→51 colors).
+- **Palette index 0**: Set `pal_bg_mem[0]` to `RGB15(2,2,5)` (dark blue-black) so any remaining index-0 pixels show as the background color instead of black.
+- **Regenerated metatiles.c/h**: Clean tile data with proper transparency in diamond corners.
 
 ### v0.2 — Metatile Engine + Height Stacking (2025-02-16)
 Major engine rewrite:

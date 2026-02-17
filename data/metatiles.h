@@ -2,7 +2,7 @@
 #ifndef METATILES_H
 #define METATILES_H
 
-#define MT_PALETTE_SIZE 52
+#define MT_PALETTE_SIZE 51
 #define MT_TILE_COUNT 81
 #define MT_COUNT 10
 

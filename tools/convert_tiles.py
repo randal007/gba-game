@@ -34,8 +34,8 @@ def main():
         for y in range(img.height):
             for x in range(img.width):
                 r, g, b, a = img.getpixel((x, y))
-                if a < 128:
-                    continue  # transparent
+                if a < 128 or (r >= 240 and g < 16 and b >= 240):
+                    continue  # transparent (alpha or magenta key)
                 rgb = (r, g, b)
                 if rgb not in color_to_idx:
                     idx = len(palette)
@@ -67,7 +67,7 @@ def main():
                             tile_data[py * 8 + px] = 0
                             continue
                         r, g, b, a = img.getpixel((ix, iy))
-                        if a < 128:
+                        if a < 128 or (r >= 240 and g < 16 and b >= 240):
                             tile_data[py * 8 + px] = 0
                         else:
                             rgb = (r, g, b)

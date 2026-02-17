@@ -223,6 +223,8 @@ static void setup_palette(void) {
     // Copy metatile palette to BG palette
     for (int i = 0; i < MT_PALETTE_SIZE; i++)
         pal_bg_mem[i] = mt_palette[i];
+    // Index 0 = background color (dark blue-black), not transparent magenta
+    pal_bg_mem[0] = RGB15(2, 2, 5);
 
     // Hero sprite palette
     memcpy16(pal_obj_mem, hero_walkPal, hero_walkPalLen / 2);
