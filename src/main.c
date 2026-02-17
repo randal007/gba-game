@@ -32,7 +32,7 @@ static const u8 world_map[MAP_ROWS][MAP_COLS] = {
 
 #define HERO_TILES_PER_FRAME  16
 #define HERO_WALK_FRAMES      6
-#define HERO_ANIM_SPEED       3
+#define HERO_ANIM_SPEED       2
 
 #define CUBE_SIDE_H    8  // Height of side faces in pixels
 

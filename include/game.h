@@ -45,7 +45,7 @@ enum {
 //=============================================================================
 // Player
 //=============================================================================
-#define PLAYER_SPEED     (FP_ONE * 3)  // 3 pixels/frame in world space
+#define PLAYER_SPEED     (FP_ONE * 6)  // 6 pixels/frame in world space
 #define PLAYER_SPR_W     32
 #define PLAYER_SPR_H     32
 
