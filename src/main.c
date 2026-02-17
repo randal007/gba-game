@@ -1,7 +1,5 @@
 // main.c — GBA Isometric Action Game
 // Pre-computed world tilemap: render everything at boot, zero runtime rendering.
-// Runtime scrolling = tilemap index copies only (a few dozen u16 writes/frame).
-
 #include "game.h"
 #include "../data/hero_walk.h"
 #include <string.h>
@@ -20,23 +18,25 @@ EWRAM_BSS static u8 world_map[MAP_ROWS][MAP_COLS];
 #define HERO_ANIM_SPEED       4
 
 //=============================================================================
-// Pre-computed world tilemap in EWRAM
-//   world_tilemap[row * WORLD_TILE_W + col] = tile index
-//   tile_dict[id * 16 .. id*16+15] = 64 bytes of 8bpp pixel data
+// EWRAM: pre-computed world tilemap + tile dictionary + strip buffer
+// world_tilemap: 432*217*2 = 187,488 bytes
+// tile_dict:     384*64    =  24,576 bytes
+// strip_buf:     256*80    =  20,480 bytes
+// world_map:     200*16    =   3,200 bytes
+// Total:                    ~235,744 bytes (fits in 256KB EWRAM)
 //=============================================================================
-EWRAM_BSS static u16 world_tilemap[WORLD_TILE_H * WORLD_TILE_W];  // ~183KB
-EWRAM_BSS static u32 tile_dict[MAX_PRECOMP_TILES * 16];           // ~24KB
+EWRAM_BSS static u16 world_tilemap[WORLD_TILE_H * WORLD_TILE_W];
+EWRAM_BSS static u32 tile_dict[MAX_PRECOMP_TILES * 16];
 static int num_tiles;
 
-// Boot-time strip rendering buffer (256×80 = 20KB)
-#define STRIP_W  256
-#define STRIP_H  80
+#define STRIP_W 256
+#define STRIP_H 80
 EWRAM_BSS static u8 strip_buf[STRIP_W * STRIP_H];
 
-// Ring buffer tracking: which world tile col/row is at hw position 0
+// Ring buffer: which world tile col/row is at hw position 0
 static int loaded_col_min, loaded_row_min;
 
-// Player bounds
+// World bounds for player clamping (fixed-point)
 static int bound_wx_min, bound_wx_max;
 static int bound_wy_min, bound_wy_max;
 
@@ -52,7 +52,7 @@ static u32 rng_next(void) {
 }
 
 //=============================================================================
-// Procedural world generation (same as before)
+// World generation (same as before)
 //=============================================================================
 static void generate_world(void) {
     memset(world_map, TILE_GRASS, sizeof(world_map));
@@ -71,8 +71,7 @@ static void generate_world(void) {
                 if (dist <= 1) world_map[row][col] = TILE_WATER;
             }
             if (col >= 100 && col <= 115 && row >= 8 && row <= 14) {
-                int cx2 = 107, cy2 = 11;
-                int dx = col - cx2, dy = row - cy2;
+                int cx = 107, cy = 11, dx = col - cx, dy = row - cy;
                 if (dx*dx + dy*dy*3 <= 30) world_map[row][col] = TILE_WATER;
             }
             if (col >= 70 && col <= 75 && row >= 1 && row <= 4) {
@@ -133,10 +132,10 @@ static void setup_palette(void) {
 }
 
 //=============================================================================
-// Strip-buffer iso cube rendering (boot-time only)
-// All coordinates are in world-pixel space; clipped to strip bounds.
+// Strip-buffer iso cube renderer (boot-time only)
+// Renders in world pixel coordinates; strip_buf origin = (strip_ox, strip_oy)
 //=============================================================================
-static int strip_ox, strip_oy;  // world-pixel origin of current strip
+static int strip_ox, strip_oy;
 
 static inline void s_plot(int wx, int wy, u8 clr) {
     int x = wx - strip_ox, y = wy - strip_oy;
@@ -155,7 +154,7 @@ static void s_hline(int wx0, int wx1, int wy, u8 clr) {
     for (int x = x0; x <= x1; x++) row[x] = clr;
 }
 
-static void render_cube_at(int sx, int sy, int type) {
+static void render_cube_strip(int sx, int sy, int type) {
     u8 ctl = type * 4 + 2, ctr = type * 4 + 3;
     u8 csl = type * 4 + 4, csr = type * 4 + 5;
     u8 cbr = 1;
@@ -208,77 +207,60 @@ static void render_cube_at(int sx, int sy, int type) {
 }
 
 //=============================================================================
-// Tile deduplication (boot-time)
+// Tile dedup (boot-time)
 //=============================================================================
-static int tile_match(const u8 *buf, int stride, const u32 *stored) {
-    const u8 *s = (const u8 *)stored;
-    for (int r = 0; r < 8; r++) {
-        const u8 *rp = buf + r * stride;
-        const u8 *sp = s + r * 8;
-        if (rp[0]!=sp[0]||rp[1]!=sp[1]||rp[2]!=sp[2]||rp[3]!=sp[3]||
-            rp[4]!=sp[4]||rp[5]!=sp[5]||rp[6]!=sp[6]||rp[7]!=sp[7])
-            return 0;
-    }
-    return 1;
-}
-
 static int find_or_add_tile(const u8 *buf, int stride) {
     for (int i = 0; i < num_tiles; i++) {
-        if (tile_match(buf, stride, &tile_dict[i * 16]))
-            return i;
+        const u8 *s = (const u8 *)&tile_dict[i * 16];
+        int match = 1;
+        for (int r = 0; r < 8 && match; r++)
+            for (int c = 0; c < 8 && match; c++)
+                if (buf[r * stride + c] != s[r * 8 + c]) match = 0;
+        if (match) return i;
     }
     if (num_tiles >= MAX_PRECOMP_TILES) return 0;
     int id = num_tiles++;
     u8 *dst = (u8 *)&tile_dict[id * 16];
-    for (int r = 0; r < 8; r++) {
-        const u8 *rp = buf + r * stride;
-        for (int c = 0; c < 8; c++) dst[r * 8 + c] = rp[c];
-    }
+    for (int r = 0; r < 8; r++)
+        for (int c = 0; c < 8; c++)
+            dst[r * 8 + c] = buf[r * stride + c];
     return id;
 }
 
 //=============================================================================
-// Boot-time pre-computation: render entire world, build world_tilemap
+// Boot: pre-compute entire world tilemap
+// Process in 2D patches: 256×80 pixels each.
+// Safe extraction per patch: 31 tile cols × 10 tile rows.
 //=============================================================================
-// Patch stepping:
-//   Horizontal: 31 safe tile cols per 256px strip (step = 248px)
-//   Vertical: 10 safe tile rows per 80px strip (step = 80px)
-#define PATCH_STEP_X  248
-#define PATCH_STEP_Y  80
-#define SAFE_COLS     31
-#define SAFE_ROWS     10
-
 static void precompute_world(void) {
     num_tiles = 0;
-    // Tile 0 = blank (all zeros) — add it explicitly
-    memset(&tile_dict[0], 0, 64);
-    num_tiles = 1;
     memset(world_tilemap, 0, sizeof(world_tilemap));
 
-    for (int py = WORLD_PX_Y0; py < WORLD_PX_Y1; py += PATCH_STEP_Y) {
-        for (int px = WORLD_PX_X0; px < WORLD_PX_X1; px += PATCH_STEP_X) {
+    // Step: 31 tile cols (248px) horizontally, 10 tile rows (80px) vertically
+    for (int py = WORLD_PX_Y0; py < WORLD_PX_Y1; py += 80) {
+        for (int px = WORLD_PX_X0; px < WORLD_PX_X1; px += 248) {
             strip_ox = px;
             strip_oy = py;
             memset(strip_buf, 0, sizeof(strip_buf));
 
-            // Render all cubes that could paint into this 256×80 strip
-            // Cube at (wx,wy) paints x:[wx-16,wx+16], y:[wy,wy+24]
+            // Render all cubes overlapping extended range
             for (int row = 0; row < MAP_ROWS; row++) {
                 for (int col = 0; col < MAP_COLS; col++) {
                     int wx, wy;
                     iso_tile_to_world(col, row, &wx, &wy);
-                    if (wx + 16 < px || wx - 16 >= px + STRIP_W) continue;
-                    if (wy + 24 < py || wy >= py + STRIP_H) continue;
-                    render_cube_at(wx, wy, world_map[row][col]);
+                    if (wx + 16 <= px || wx - 16 >= px + STRIP_W) continue;
+                    if (wy + 24 <= py || wy >= py + STRIP_H) continue;
+                    render_cube_strip(wx, wy, world_map[row][col]);
                 }
             }
 
-            // Extract tiles from safe interior
+            // Extract tiles from safe region into world_tilemap
             int wtc_start = (px - WORLD_PX_X0) / 8;
-            int wtr_start = (py - WORLD_PX_Y0) / 8;
-            int wtc_end = wtc_start + SAFE_COLS;
-            int wtr_end = wtr_start + SAFE_ROWS;
+            int wtc_end = wtc_start + 31;
             if (wtc_end > WORLD_TILE_W) wtc_end = WORLD_TILE_W;
+
+            int wtr_start = (py - WORLD_PX_Y0) / 8;
+            int wtr_end = wtr_start + 10;
             if (wtr_end > WORLD_TILE_H) wtr_end = WORLD_TILE_H;
 
             for (int wtr = wtr_start; wtr < wtr_end; wtr++) {
@@ -287,8 +269,7 @@ static void precompute_world(void) {
                     int by = (WORLD_PX_Y0 + wtr * 8) - py;
                     if (bx < 0 || bx + 8 > STRIP_W) continue;
                     if (by < 0 || by + 8 > STRIP_H) continue;
-                    const u8 *block = &strip_buf[by * STRIP_W + bx];
-                    int tid = find_or_add_tile(block, STRIP_W);
+                    int tid = find_or_add_tile(&strip_buf[by * STRIP_W + bx], STRIP_W);
                     world_tilemap[wtr * WORLD_TILE_W + wtc] = (u16)tid;
                 }
             }
@@ -297,9 +278,9 @@ static void precompute_world(void) {
 }
 
 //=============================================================================
-// Hardware tilemap writes (ring buffer into 64×64 screenblocks)
+// Hardware screenblock helpers
 //=============================================================================
-static inline void hw_write(int hc, int hr, u16 tid) {
+static inline void hw_write_entry(int hc, int hr, u16 tid) {
     int sb = (hc >> 5) + (hr >> 5) * 2;
     ((u16 *)se_mem[TILE_SBB + sb])[(hr & 31) * 32 + (hc & 31)] = tid;
 }
@@ -309,10 +290,9 @@ static void load_hw_col(int wtc) {
     for (int i = 0; i < 64; i++) {
         int wtr = loaded_row_min + i;
         u16 tid = 0;
-        if ((unsigned)wtc < (unsigned)WORLD_TILE_W &&
-            (unsigned)wtr < (unsigned)WORLD_TILE_H)
+        if (wtc >= 0 && wtc < WORLD_TILE_W && wtr >= 0 && wtr < WORLD_TILE_H)
             tid = world_tilemap[wtr * WORLD_TILE_W + wtc];
-        hw_write(hc, wtr & 63, tid);
+        hw_write_entry(hc, wtr & 63, tid);
     }
 }
 
@@ -321,28 +301,20 @@ static void load_hw_row(int wtr) {
     for (int i = 0; i < 64; i++) {
         int wtc = loaded_col_min + i;
         u16 tid = 0;
-        if ((unsigned)wtc < (unsigned)WORLD_TILE_W &&
-            (unsigned)wtr < (unsigned)WORLD_TILE_H)
+        if (wtc >= 0 && wtc < WORLD_TILE_W && wtr >= 0 && wtr < WORLD_TILE_H)
             tid = world_tilemap[wtr * WORLD_TILE_W + wtc];
-        hw_write(wtc & 63, hr, tid);
+        hw_write_entry(wtc & 63, hr, tid);
     }
 }
 
 static void load_hw_full(void) {
-    for (int i = 0; i < 64; i++) {
-        int wtc = loaded_col_min + i;
-        int hc = wtc & 63;
-        for (int j = 0; j < 64; j++) {
-            int wtr = loaded_row_min + j;
-            u16 tid = 0;
-            if ((unsigned)wtc < (unsigned)WORLD_TILE_W &&
-                (unsigned)wtr < (unsigned)WORLD_TILE_H)
-                tid = world_tilemap[wtr * WORLD_TILE_W + wtc];
-            hw_write(hc, wtr & 63, tid);
-        }
-    }
+    for (int i = 0; i < 64; i++)
+        load_hw_col(loaded_col_min + i);
 }
 
+//=============================================================================
+// Runtime: update hardware tilemap ring buffer as camera scrolls
+//=============================================================================
 static void update_hw_tilemap(int cam_wx, int cam_wy) {
     int cam_tc = (cam_wx - WORLD_PX_X0) / 8;
     int cam_tr = (cam_wy - WORLD_PX_Y0) / 8;
@@ -356,7 +328,7 @@ static void update_hw_tilemap(int cam_wx, int cam_wy) {
     if (desired_row < 0) desired_row = 0;
     if (desired_row > WORLD_TILE_H - 64) desired_row = WORLD_TILE_H - 64;
 
-    // Scroll columns
+    // Update columns first
     while (loaded_col_min < desired_col) {
         load_hw_col(loaded_col_min + 64);
         loaded_col_min++;
@@ -366,7 +338,7 @@ static void update_hw_tilemap(int cam_wx, int cam_wy) {
         load_hw_col(loaded_col_min);
     }
 
-    // Scroll rows
+    // Then rows
     while (loaded_row_min < desired_row) {
         load_hw_row(loaded_row_min + 64);
         loaded_row_min++;
@@ -489,15 +461,13 @@ int main(void) {
     // Load hero sprite tiles
     memcpy32(&tile_mem[4][0], hero_walkTiles, hero_walkTilesLen / 4);
 
-    // === BOOT PRE-COMPUTATION ===
-    // Render entire world, deduplicate tiles, build world_tilemap.
-    // Takes a few seconds — acceptable at boot.
+    // === BOOT: pre-compute entire world tilemap (takes a few seconds) ===
     precompute_world();
 
-    // Upload tile dictionary to VRAM (once)
+    // Upload tile dictionary to VRAM
     memcpy32(&tile_mem[TILE_CBB][0], tile_dict, (num_tiles * 64) / 4);
 
-    // Set up Mode 0
+    // Set up Mode 0: BG0 (8bpp, 64×64) + OBJ
     REG_BG0CNT = BG_CBB(TILE_CBB) | BG_SBB(TILE_SBB) | BG_8BPP | BG_SIZE3 | BG_PRIO(1);
     REG_DISPCNT = DCNT_MODE0 | DCNT_BG0 | DCNT_OBJ | DCNT_OBJ_1D;
 
@@ -506,40 +476,39 @@ int main(void) {
     camera.x = player.world_x;
     camera.y = player.world_y;
 
-    // Initial hardware tilemap load (64×64 centered on camera)
-    {
-        int cam_wx = FP2INT(camera.x);
-        int cam_wy = FP2INT(camera.y);
-        int cam_tc = (cam_wx - WORLD_PX_X0) / 8;
-        int cam_tr = (cam_wy - WORLD_PX_Y0) / 8;
-        loaded_col_min = cam_tc - 32;
-        loaded_row_min = cam_tr - 32;
-        if (loaded_col_min < 0) loaded_col_min = 0;
-        if (loaded_col_min > WORLD_TILE_W - 64) loaded_col_min = WORLD_TILE_W - 64;
-        if (loaded_row_min < 0) loaded_row_min = 0;
-        if (loaded_row_min > WORLD_TILE_H - 64) loaded_row_min = WORLD_TILE_H - 64;
-        load_hw_full();
-    }
+    // Initial hw tilemap load centered on camera
+    int cam_wx = FP2INT(camera.x);
+    int cam_wy = FP2INT(camera.y);
+    int init_tc = (cam_wx - WORLD_PX_X0) / 8;
+    int init_tr = (cam_wy - WORLD_PX_Y0) / 8;
+    loaded_col_min = init_tc - 32;
+    loaded_row_min = init_tr - 32;
+    if (loaded_col_min < 0) loaded_col_min = 0;
+    if (loaded_col_min > WORLD_TILE_W - 64) loaded_col_min = WORLD_TILE_W - 64;
+    if (loaded_row_min < 0) loaded_row_min = 0;
+    if (loaded_row_min > WORLD_TILE_H - 64) loaded_row_min = WORLD_TILE_H - 64;
+    load_hw_full();
 
-    // === MAIN LOOP — zero rendering cost ===
+    // === MAIN LOOP: zero rendering, just tilemap index copies ===
     while (1) {
         key_poll();
         player_update();
         camera_update();
 
-        int cam_wx = FP2INT(camera.x);
-        int cam_wy = FP2INT(camera.y);
+        cam_wx = FP2INT(camera.x);
+        cam_wy = FP2INT(camera.y);
 
-        // Update ring buffer (copies tilemap indices, no pixel work)
+        // Update ring buffer (a few u16 writes per frame)
         update_hw_tilemap(cam_wx, cam_wy);
 
-        // BG scroll: world pixel → hardware pixel (wraps at 512)
+        // BG scroll: hardware wraps at 512 naturally
         int scroll_x = cam_wx - WORLD_PX_X0 - SCREEN_W / 2;
         int scroll_y = cam_wy - WORLD_PX_Y0 - SCREEN_H / 2;
         REG_BG0HOFS = scroll_x & 0x1FF;
         REG_BG0VOFS = scroll_y & 0x1FF;
 
         player_draw();
+
         VBlankIntrWait();
         oam_copy(oam_mem, obj_buffer, 2);
     }
