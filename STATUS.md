@@ -20,6 +20,17 @@ Changed from 16×16 diamond world to **200×16 long strip** with sliding-window 
 - **Camera:** Follows player with lerp, clamped to world edges — no wrapping
 - **Player bounds:** Clamped to world edges — cannot walk off the map
 
+### ✅ Scroll Hitch Fix (Progressive Re-render)
+
+Previously, crossing the 80px drift threshold triggered a full re-render of the pixel buffer + tile dedup + VRAM upload in a single frame, causing 2-3 second freezes every ~80px of camera movement.
+
+**Fix:** Amortized the re-render across ~10 frames:
+- **Phase 1** (4 frames): Render iso cubes in column slices (~50 columns/frame)
+- **Phase 2** (5 frames): Build tileset+tilemap in row slices (~8 tile rows/frame)
+- **Phase 3** (1 frame): Upload to VRAM
+
+Old VRAM content stays visible during phases 1-2, so no visual glitch. The display updates atomically on phase 3. Threshold also increased from 80px to 110px to reduce re-render frequency.
+
 ### Architecture
 - Mode 0, BG0: 8bpp, 64×64 tilemap (512×512px BG), charblock 0, screenblock 28
 - OBJ sprite hero: 4bpp, charblock 4

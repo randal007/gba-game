@@ -35,6 +35,21 @@ EWRAM_BSS static u16 tilemap[BG_MAP_W * BG_MAP_H];
 static int win_cx, win_cy;
 
 //=============================================================================
+// Progressive re-render state
+// Spreads the expensive re-render across multiple frames to avoid hitching.
+// Phase 0: idle
+// Phase 1: rendering iso cubes (RERENDER_CUBE_FRAMES frames)
+// Phase 2: building tileset+map (RERENDER_TILE_FRAMES frames)
+// Phase 3: upload to VRAM (1 frame)
+//=============================================================================
+#define RERENDER_CUBE_FRAMES  4
+#define RERENDER_TILE_FRAMES  5
+
+static int rerender_phase = 0;
+static int rerender_step = 0;
+static int rerender_target_cx, rerender_target_cy;
+
+//=============================================================================
 // Simple pseudo-random number generator
 //=============================================================================
 static u32 rng_state = 0xDEADBEEF;
@@ -259,32 +274,31 @@ static void render_iso_cube(int sx, int sy, int type) {
 // Window is centered at (cx, cy) in world-pixel-space.
 // Only renders cubes that intersect the 512×320 pixel buffer.
 //=============================================================================
-static void render_window(int cx, int cy) {
-    win_cx = cx;
-    win_cy = cy;
+// Render a range of map columns [col_start, col_end) into the pixel buffer.
+// Call with col_start=0, col_end=MAP_COLS for full render.
+// win_cx/win_cy must already be set. Buffer must be cleared before first call.
+static void render_window_cols(int col_start, int col_end) {
+    int win_left = win_cx - WIN_HALF_W;
+    int win_top  = win_cy - WIN_HALF_H;
 
-    memset(win_pixels, 0, sizeof(win_pixels));
-
-    int win_left = cx - WIN_HALF_W;
-    int win_top  = cy - WIN_HALF_H;
-
-    // Render back-to-front (increasing row, then col)
     for (int row = 0; row < MAP_ROWS; row++) {
-        for (int col = 0; col < MAP_COLS; col++) {
+        for (int col = col_start; col < col_end; col++) {
             int wx, wy;
             iso_tile_to_world(col, row, &wx, &wy);
-
-            // Convert world-pixel to buffer-pixel coords
             int px = wx - win_left;
             int py = wy - win_top;
-
-            // Cull: cube is ~32px wide, ~24px tall
             if (px < -32 || px >= WIN_PX_W + 32) continue;
             if (py < -24 || py >= WIN_PX_H + 24) continue;
-
             render_iso_cube(px, py, world_map[row][col]);
         }
     }
+}
+
+static void render_window(int cx, int cy) {
+    win_cx = cx;
+    win_cy = cy;
+    memset(win_pixels, 0, sizeof(win_pixels));
+    render_window_cols(0, MAP_COLS);
 }
 
 //=============================================================================
@@ -321,21 +335,32 @@ static int find_or_add_tile(const u8 *block_start, int stride) {
     return id;
 }
 
-static void build_tileset_and_map(void) {
-    num_unique_tiles = 0;
-    memset(tilemap, 0, sizeof(tilemap));
+// Build tileset+map for tile rows [tr_start, tr_end).
+// Call with reset=1 on the first batch to clear state.
+static void build_tileset_and_map_rows(int tr_start, int tr_end, int reset) {
+    if (reset) {
+        num_unique_tiles = 0;
+        memset(tilemap, 0, sizeof(tilemap));
+    }
 
     int tile_cols = WIN_PX_W / 8;  // 64
     int tile_rows = WIN_PX_H / 8;  // 40
-    if (tile_rows > BG_MAP_H) tile_rows = BG_MAP_H;
+    if (tr_end > tile_rows) tr_end = tile_rows;
+    if (tr_end > BG_MAP_H) tr_end = BG_MAP_H;
 
-    for (int tr = 0; tr < tile_rows; tr++) {
+    for (int tr = tr_start; tr < tr_end; tr++) {
         for (int tc = 0; tc < tile_cols; tc++) {
             const u8 *block = &win_pixels[tr * 8 * WIN_PX_W + tc * 8];
             int tid = find_or_add_tile(block, WIN_PX_W);
             tilemap[tr * BG_MAP_W + tc] = (u16)tid;
         }
     }
+}
+
+static void build_tileset_and_map(void) {
+    int tile_rows = WIN_PX_H / 8;
+    if (tile_rows > BG_MAP_H) tile_rows = BG_MAP_H;
+    build_tileset_and_map_rows(0, tile_rows, 1);
 }
 
 //=============================================================================
@@ -501,7 +526,7 @@ int main(void) {
     camera.x = player.world_x;
     camera.y = player.world_y;
 
-    // Initial render centered on player
+    // Initial render centered on player (synchronous, only at boot)
     rerender_at(FP2INT(camera.x), FP2INT(camera.y));
 
     while (1) {
@@ -509,17 +534,63 @@ int main(void) {
         player_update();
         camera_update();
 
-        // Check if we need to re-render the window
         int cam_wx = FP2INT(camera.x);
         int cam_wy = FP2INT(camera.y);
 
-        int drift_x = cam_wx - win_cx;
-        int drift_y = cam_wy - win_cy;
-        if (drift_x < 0) drift_x = -drift_x;
-        if (drift_y < 0) drift_y = -drift_y;
+        //-------------------------------------------------------------
+        // Progressive re-render state machine
+        //-------------------------------------------------------------
+        if (rerender_phase == 0) {
+            // Check if we need to start a re-render
+            int drift_x = cam_wx - win_cx;
+            int drift_y = cam_wy - win_cy;
+            if (drift_x < 0) drift_x = -drift_x;
+            if (drift_y < 0) drift_y = -drift_y;
 
-        if (drift_x > RERENDER_THRESHOLD || drift_y > RERENDER_THRESHOLD) {
-            rerender_at(cam_wx, cam_wy);
+            if (drift_x > RERENDER_THRESHOLD || drift_y > RERENDER_THRESHOLD) {
+                rerender_target_cx = cam_wx;
+                rerender_target_cy = cam_wy;
+                rerender_phase = 1;
+                rerender_step = 0;
+                // Set new window center and clear buffer on first step
+                win_cx = rerender_target_cx;
+                win_cy = rerender_target_cy;
+                memset(win_pixels, 0, sizeof(win_pixels));
+            }
+        }
+
+        if (rerender_phase == 1) {
+            // Render iso cubes in column slices
+            int cols_per_step = (MAP_COLS + RERENDER_CUBE_FRAMES - 1) / RERENDER_CUBE_FRAMES;
+            int col_start = rerender_step * cols_per_step;
+            int col_end = col_start + cols_per_step;
+            if (col_end > MAP_COLS) col_end = MAP_COLS;
+
+            render_window_cols(col_start, col_end);
+            rerender_step++;
+
+            if (rerender_step >= RERENDER_CUBE_FRAMES) {
+                rerender_phase = 2;
+                rerender_step = 0;
+            }
+        } else if (rerender_phase == 2) {
+            // Build tileset+map in row slices
+            int total_tile_rows = WIN_PX_H / 8;  // 40
+            if (total_tile_rows > BG_MAP_H) total_tile_rows = BG_MAP_H;
+            int rows_per_step = (total_tile_rows + RERENDER_TILE_FRAMES - 1) / RERENDER_TILE_FRAMES;
+            int tr_start = rerender_step * rows_per_step;
+            int tr_end = tr_start + rows_per_step;
+
+            build_tileset_and_map_rows(tr_start, tr_end, (rerender_step == 0) ? 1 : 0);
+            rerender_step++;
+
+            if (rerender_step >= RERENDER_TILE_FRAMES) {
+                rerender_phase = 3;
+            }
+        } else if (rerender_phase == 3) {
+            // Upload to VRAM
+            upload_to_vram();
+            rerender_phase = 0;
         }
 
         // Hardware scroll: camera world coords → buffer coords → BG scroll

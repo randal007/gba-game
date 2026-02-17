@@ -42,7 +42,7 @@
 #define WIN_HALF_H   (WIN_PX_H / 2)   // 160
 
 // Re-render when camera drifts this far from window center
-#define RERENDER_THRESHOLD  80
+#define RERENDER_THRESHOLD  110
 
 // Tilemap: 64×64 tiles for BG_SIZE3 (512×512)
 #define BG_MAP_W     64
