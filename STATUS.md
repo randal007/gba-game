@@ -1,6 +1,14 @@
 # GBA Isometric Action Game — Status
 
-## Current Version: v0.2.1
+## Current Version: v0.2.2
+
+### v0.2.2 — Isometric Parallelogram Side Faces (2026-02-16)
+- **Fixed flat rectangular wall faces**: Side faces were rendered as axis-aligned rectangles (straight vertical drop). Now rendered as proper 2:1 isometric parallelograms following the diamond edges — left face slopes down-right, right face slopes down-left, matching FFTA-style iso rendering.
+- **New `stamp_side_face()` function**: Renders left/right parallelogram faces with per-pixel compositing. Samples texture from existing 32×16 side metatile PNGs (left half → left face, right half → right face) with vertical tiling for tall walls.
+- **Single face per cell**: Instead of stacking h separate rectangular side faces, draws one continuous parallelogram per face with height = h × SIDE_HEIGHT. Eliminates stacking artifacts.
+- **Geometry**: Left face parallelogram vertices: diamond-left → diamond-bottom → drop by face_h → back. Right face mirrors. Top/bottom edges slope at 2:1 iso angle, side edges are vertical.
+- **Increased limits**: MAX_PRECOMP_TILES 512→896 (VRAM safe with SBB 28), HASH_SIZE 1024→2048, WORLD_PX_Y1 1752→1800 (accounts for parallelogram overhang).
+- **Removed old dead code**: stamp_side_left/stamp_side_right (unused precursor functions).
 
 ### v0.2.1 — Transparency Fix (2026-02-16)
 - **Fixed magenta bleed bug**: Source tile PNGs used opaque magenta (255,0,255) as transparency key, but the converter only checked alpha channel. Magenta pixels were assigned palette index 1 and rendered visibly between diamond tiles.

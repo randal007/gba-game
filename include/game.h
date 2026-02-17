@@ -60,7 +60,7 @@
 #define WORLD_PX_X0  (-256)
 #define WORLD_PX_Y0  (-64)     // account for max height elevation
 #define WORLD_PX_X1  (3200)
-#define WORLD_PX_Y1  (1752)    // (199+15)*8 + 16 = 1728 + 16 = 1744, round up
+#define WORLD_PX_Y1  (1800)    // (199+15)*8 + 8 + MAX_HEIGHT*16 + 8 = 1792, round up
 
 #define WORLD_TILE_W ((WORLD_PX_X1 - WORLD_PX_X0) / 8)  // 432
 #define WORLD_TILE_H ((WORLD_PX_Y1 - WORLD_PX_Y0) / 8)  // 227
@@ -74,7 +74,7 @@
 //=============================================================================
 // Pre-computed tilemap limits
 //=============================================================================
-#define MAX_PRECOMP_TILES 512
+#define MAX_PRECOMP_TILES 896
 
 //=============================================================================
 // Fixed-point (24.8)

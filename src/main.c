@@ -233,7 +233,7 @@ static void setup_palette(void) {
 //=============================================================================
 // Tile dedup with simple hash for speed
 //=============================================================================
-#define HASH_SIZE 1024
+#define HASH_SIZE 2048
 #define HASH_MASK (HASH_SIZE - 1)
 static u16 hash_table[HASH_SIZE];  // tile index + 1, or 0 = empty
 static u16 hash_keys[HASH_SIZE];   // hash of tile data
@@ -318,6 +318,109 @@ static void stamp_metatile(int mt_idx, int px, int py) {
 }
 
 //=============================================================================
+// Parallelogram side face stamping for proper isometric walls
+// Each side face is a parallelogram following the 2:1 iso diamond edges.
+// The side texture (32x16) is split: left half (x=0..15) = left face,
+// right half (x=16..31) = right face.
+//=============================================================================
+//=============================================================================
+// Isometric side face: stamp a parallelogram-shaped face into world tilemap.
+// face=0 → left face (slopes down-right following diamond left edge)
+// face=1 → right face (slopes down-left following diamond right edge)
+//
+// Left face parallelogram (world coords, relative to diamond center wx,wy):
+//   A=(wx-16, top_y+8)  B=(wx, top_y+16)  C=(wx, top_y+16+fh)  D=(wx-16, top_y+8+fh)
+//   where top_y = base_y - h*SIDE_HEIGHT, fh = h*SIDE_HEIGHT
+//
+// Right face parallelogram:
+//   E=(wx, top_y+16)  F=(wx+16, top_y+8)  G=(wx+16, top_y+8+fh)  H=(wx, top_y+16+fh)
+//=============================================================================
+static void stamp_side_face(int mt_idx, int face, int wx, int top_y, int face_h) {
+    // Proper isometric parallelogram side face.
+    // LEFT face: top edge from (wx-16, top_y+8) to (wx, top_y+16) — slope 8/16 = 1:2
+    //   At local x (0..15), the top of the face is at ly = lx/2
+    //   Bottom edge parallel: ly = lx/2 + face_h
+    //   Bounding box: (wx-16, top_y+8), 16 x (face_h + 8)
+    // RIGHT face: top edge from (wx, top_y+16) to (wx+16, top_y+8) — slope -1:2
+    //   At local x (0..15), the top of the face is at ly = 8 - (lx+1)/2
+    //   Bottom edge parallel: ly = 8 - (lx+1)/2 + face_h
+    //   Bounding box: (wx, top_y+8), 16 x (face_h + 8)
+    if (face_h <= 0) return;
+
+    int face_px, face_py, face_w;
+    face_w = 16;
+    face_py = top_y + 8;
+    int total_h = face_h + 8;
+
+    if (face == 0) {
+        face_px = wx - 16;
+    } else {
+        face_px = wx;
+    }
+
+    int tc_min = (face_px - WORLD_PX_X0) / 8;
+    int tc_max = (face_px + face_w - 1 - WORLD_PX_X0) / 8;
+    int tr_min = (face_py - WORLD_PX_Y0) / 8;
+    int tr_max = (face_py + total_h - 1 - WORLD_PX_Y0) / 8;
+
+    for (int tr = tr_min; tr <= tr_max; tr++) {
+        if (tr < 0 || tr >= WORLD_TILE_H) continue;
+        for (int tc = tc_min; tc <= tc_max; tc++) {
+            if (tc < 0 || tc >= WORLD_TILE_W) continue;
+
+            int cur_idx = world_tilemap[tr * WORLD_TILE_W + tc];
+            u8 composite[64];
+            memcpy(composite, tile_dict[cur_idx], 64);
+            int changed = 0;
+
+            for (int py = 0; py < 8; py++) {
+                int wy = tr * 8 + WORLD_PX_Y0 + py;
+                int ly = wy - face_py;
+                if (ly < 0 || ly >= total_h) continue;
+
+                for (int px_off = 0; px_off < 8; px_off++) {
+                    int wx2 = tc * 8 + WORLD_PX_X0 + px_off;
+                    int lx = wx2 - face_px;
+                    if (lx < 0 || lx >= face_w) continue;
+
+                    // Check parallelogram bounds
+                    int top_edge;
+                    if (face == 0) {
+                        // Left face: top edge at ly = lx/2
+                        top_edge = lx / 2;
+                    } else {
+                        // Right face: top edge at ly = (16 - lx) / 2
+                        // At lx=0: top=8, at lx=15: top=0
+                        top_edge = (16 - lx) / 2;
+                    }
+
+                    if (ly < top_edge || ly >= top_edge + face_h) continue;
+
+                    // Texture coordinate: ty wraps within 16px for tiling
+                    int ty = (ly - top_edge) % 16;
+                    int tx = (face == 0) ? lx : (lx + 16);
+
+                    int mt_tx = tx / 8;
+                    int mt_ty = ty / 8;
+                    int tile_id = mt_metatile_tiles[mt_idx][mt_ty * 4 + mt_tx];
+                    int pixel = mt_tile_pixels[tile_id][(ty & 7) * 8 + (tx & 7)];
+
+                    if (pixel != 0) {
+                        composite[py * 8 + px_off] = (u8)pixel;
+                        changed = 1;
+                    }
+                }
+            }
+
+            if (changed) {
+                int new_idx = find_or_add_tile(composite);
+                world_tilemap[tr * WORLD_TILE_W + tc] = (u16)new_idx;
+            }
+        }
+    }
+}
+
+//=============================================================================
 // Boot: build world tilemap using metatile compositing
 //=============================================================================
 static void precompute_world(void) {
@@ -327,12 +430,12 @@ static void precompute_world(void) {
     memset(tile_dict[0], 0, 64);  // tile 0 = transparent
     num_tiles = 1;
 
-    // Ground metatile indices (MT_GROUND_GRASS etc map to metatile IDs 0-4)
-    // Side metatile indices (MT_SIDE_GRASS_EDGE etc map to metatile IDs 5-9)
+    // Ground metatile indices
     static const int ground_mt[] = {
         MT_GROUND_GRASS, MT_GROUND_STONE, MT_GROUND_DIRT,
         MT_GROUND_WATER, MT_GROUND_ROOF
     };
+    // Side metatile indices (used as texture source for parallelogram faces)
     static const int side_mt[] = {
         MT_SIDE_GRASS_EDGE, MT_SIDE_STONE_WALL, MT_SIDE_DIRT_WALL,
         MT_SIDE_BRICK_WALL, MT_SIDE_ROOF_EDGE
@@ -355,14 +458,16 @@ static void precompute_world(void) {
             int h = cell->height;
 
             int top_y = base_y - h * SIDE_HEIGHT;
-            int px = wx - ISO_HALF_W;  // left edge of 32px wide metatile
 
-            // Draw side faces from bottom to top
-            for (int i = h - 1; i >= 0; i--) {
-                stamp_metatile(side_mt[cell->side], px, top_y + ISO_TILE_H + i * SIDE_HEIGHT);
+            // Draw parallelogram side faces (left and right)
+            if (h > 0) {
+                int face_h = h * SIDE_HEIGHT;
+                stamp_side_face(side_mt[cell->side], 0, wx, top_y, face_h);  // left
+                stamp_side_face(side_mt[cell->side], 1, wx, top_y, face_h);  // right
             }
 
-            // Draw top face
+            // Draw top face diamond
+            int px = wx - ISO_HALF_W;
             stamp_metatile(ground_mt[cell->ground], px, top_y);
         }
     }
