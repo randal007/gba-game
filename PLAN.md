@@ -30,25 +30,33 @@ Think: Link's Awakening meets Final Fantasy Tactics Advance visuals.
 - Camera follows player
 - D-pad controls
 
-### v0.2 — Sword Attack
+### v0.2 — Metatile Engine + Tile Stacking ✅
+- Metatile-based renderer (instant boot, no pixel rendering)
+- Height system (0-4) with stacking
+- FFTA-style parallelogram wall faces
+- Pixel's tile art integrated (ground + side tiles)
+- 200×16 side-scroller world with hills, fortress, ruins
+
+### v0.3 — Collision, Jump, Occlusion
+- Wall collision — block movement into tiles higher than current
+- Jump (A button) — hop up 1 height level onto adjacent tile
+- Fall — walk off an edge → drop to lower tile height
+- Occlusion — character hides behind walls/mountains in front (dual BG layers or OBJ window)
+
+### v0.4 — Sword Attack
 - Sword swing animation
 - Hitbox spawns in facing direction
 - Visual feedback (slash effect)
 
-### v0.3 — First Enemy
+### v0.5 — First Enemy
 - One enemy type (slime? bat?)
 - Wander AI + chase when player is close
 - Takes damage from sword, dies
 
-### v0.4 — Jump + Height
-- Jump mechanic with shadow
-- Tiles at different heights
-- Landing on elevated tiles
-
-### v0.5 — Playable Area
+### v0.6 — Playable Area
 - Multiple connected zones/rooms
 - Screen transitions or scrolling
-- Environmental variety (grass, stone, water)
+- Environmental variety
 
 ### v1.0 — Mini Adventure
 - Title screen
@@ -72,11 +80,17 @@ Think: Link's Awakening meets Final Fantasy Tactics Advance visuals.
 
 ## Status
 - [x] devkitARM setup (gcc 15.2.0, mGBA installed)
-- [x] v0.1 scaffold: iso tilemap, player movement, camera follow (Hex)
-- [x] v0.1 art assets: hero walk sprite, floor tileset (Pixel)
-- [ ] v0.1 complete — integrate art into engine, test on mGBA
-- [ ] v0.2
-- [ ] v0.3
-- [ ] v0.4
-- [ ] v0.5
-- [ ] v1.0
+- [x] v0.1 — iso tilemap, hardware scrolling, player movement, 200×16 world
+- [x] v0.2 — metatile engine, tile stacking, iso parallelogram walls, Pixel's art
+- [ ] v0.3 — collision, jump, fall, occlusion
+- [ ] v0.4 — sword attack
+- [ ] v0.5 — first enemy
+- [ ] v0.6 — playable area
+- [ ] v1.0 — mini adventure
+
+## Side Projects
+### HTML Level Editor (planned)
+- Visual 16×200 grid editor in browser
+- Drag-and-drop tile placement with height control
+- Export to format convertible to game level data
+- Serve via Canvas or local HTML file
