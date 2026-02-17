@@ -66,7 +66,7 @@ enum {
 //=============================================================================
 // Player — speed tuned for 60fps now!
 //=============================================================================
-#define PLAYER_SPEED     (FP_ONE * 2)   // 2 pixels/frame at 60fps
+#define PLAYER_SPEED     (FP_ONE * 1)   // 1 pixel/frame at 60fps
 #define PLAYER_SPR_W     32
 #define PLAYER_SPR_H     32
 
