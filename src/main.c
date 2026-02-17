@@ -1,6 +1,6 @@
-// main.c — GBA Isometric Action Game
-// Pre-computed world tilemap: render everything at boot, zero runtime rendering.
+// main.c — v0.2: Metatile engine with height stacking
 #include "game.h"
+#include "../data/metatiles.h"
 #include "../data/hero_walk.h"
 #include <string.h>
 
@@ -11,29 +11,20 @@ static OBJ_ATTR obj_buffer[128];
 static Player player;
 static Camera camera;
 
-EWRAM_BSS static u8 world_map[MAP_ROWS][MAP_COLS];
+static MapCell world_map[MAP_ROWS][MAP_COLS];
 
 #define HERO_TILES_PER_FRAME  16
 #define HERO_WALK_FRAMES      6
 #define HERO_ANIM_SPEED       4
 
 //=============================================================================
-// EWRAM: pre-computed world tilemap + tile dictionary + strip buffer
-// world_tilemap: 432*217*2 = 187,488 bytes
-// tile_dict:     384*64    =  24,576 bytes
-// strip_buf:     256*80    =  20,480 bytes
-// world_map:     200*16    =   3,200 bytes
-// Total:                    ~235,744 bytes (fits in 256KB EWRAM)
+// EWRAM: pre-computed world tilemap + tile pixel dictionary
 //=============================================================================
 EWRAM_BSS static u16 world_tilemap[WORLD_TILE_H * WORLD_TILE_W];
-EWRAM_BSS static u32 tile_dict[MAX_PRECOMP_TILES * 16];
+EWRAM_BSS static u8 tile_dict[MAX_PRECOMP_TILES][64];  // 8bpp pixel data per tile
 static int num_tiles;
 
-#define STRIP_W 256
-#define STRIP_H 80
-EWRAM_BSS static u8 strip_buf[STRIP_W * STRIP_H];
-
-// Ring buffer: which world tile col/row is at hw position 0
+// Ring buffer tracking
 static int loaded_col_min, loaded_row_min;
 
 // World bounds for player clamping (fixed-point)
@@ -52,227 +43,341 @@ static u32 rng_next(void) {
 }
 
 //=============================================================================
-// World generation (same as before)
+// World generation with height
 //=============================================================================
 static void generate_world(void) {
-    memset(world_map, TILE_GRASS, sizeof(world_map));
-    for (int col = 0; col < MAP_COLS; col++) {
-        for (int row = 0; row < MAP_ROWS; row++) {
-            if (row >= 6 && row <= 9) {
-                int road_center = 7 + ((col * 3 + col/7) % 4) - 1;
-                int dist = row - road_center;
-                if (dist < 0) dist = -dist;
-                if (dist <= 1) world_map[row][col] = TILE_STONE;
+    // Default: flat grass at height 1
+    for (int r = 0; r < MAP_ROWS; r++) {
+        for (int c = 0; c < MAP_COLS; c++) {
+            world_map[r][c].ground = GROUND_GRASS;
+            world_map[r][c].side = SIDE_GRASS;
+            world_map[r][c].height = 1;
+        }
+    }
+
+    // === ROAD: stone path through center ===
+    for (int c = 0; c < MAP_COLS; c++) {
+        int road_center = 7 + ((c * 3 + c / 7) % 4) - 1;
+        for (int r = 0; r < MAP_ROWS; r++) {
+            int dist = r - road_center;
+            if (dist < 0) dist = -dist;
+            if (dist <= 1) {
+                world_map[r][c].ground = GROUND_STONE;
+                world_map[r][c].side = SIDE_STONE;
             }
-            if (col >= 40 && col <= 55) {
-                int river_center = 4 + ((col - 40) * 2 + 3) / 5;
-                int dist = row - river_center;
-                if (dist < 0) dist = -dist;
-                if (dist <= 1) world_map[row][col] = TILE_WATER;
+        }
+    }
+
+    // === HILLS: rolling terrain (height 2-3) ===
+    // Hill cluster 1: cols 10-25, rows 0-5
+    for (int c = 10; c <= 25; c++) {
+        for (int r = 0; r <= 5; r++) {
+            int dc = c - 17, dr = r - 2;
+            int d2 = dc * dc + dr * dr * 2;
+            if (d2 < 20) {
+                world_map[r][c].height = (d2 < 8) ? 3 : 2;
             }
-            if (col >= 100 && col <= 115 && row >= 8 && row <= 14) {
-                int cx = 107, cy = 11, dx = col - cx, dy = row - cy;
-                if (dx*dx + dy*dy*3 <= 30) world_map[row][col] = TILE_WATER;
+        }
+    }
+
+    // Hill cluster 2: cols 55-70, rows 0-6
+    for (int c = 55; c <= 70; c++) {
+        for (int r = 0; r <= 6; r++) {
+            int dc = c - 62, dr = r - 3;
+            int d2 = dc * dc + dr * dr * 2;
+            if (d2 < 30) {
+                world_map[r][c].height = (d2 < 10) ? 3 : 2;
             }
-            if (col >= 70 && col <= 75 && row >= 1 && row <= 4) {
-                int dx = col - 72, dy = row - 2;
-                if (dx*dx + dy*dy <= 4) world_map[row][col] = TILE_WATER;
+        }
+    }
+
+    // Hill cluster 3: cols 120-135, rows 10-15
+    for (int c = 120; c <= 135; c++) {
+        for (int r = 10; r <= 15; r++) {
+            int dc = c - 127, dr = r - 12;
+            int d2 = dc * dc + dr * dr * 2;
+            if (d2 < 25) {
+                world_map[r][c].height = (d2 < 8) ? 3 : 2;
             }
-            if (col >= 130 && col <= 160) {
-                rng_state = (u32)(col * 31 + row * 97 + 12345);
-                rng_next();
-                if ((rng_next() % 100) < 60 && world_map[row][col] == TILE_GRASS)
-                    world_map[row][col] = TILE_DIRT;
+        }
+    }
+
+    // === RIVER VALLEY: cols 40-55, height 0 with water ===
+    for (int c = 38; c <= 57; c++) {
+        int river_center = 4 + ((c - 38) * 6) / 20;
+        for (int r = 0; r < MAP_ROWS; r++) {
+            int dist = r - river_center;
+            if (dist < 0) dist = -dist;
+            if (dist <= 2) {
+                world_map[r][c].height = 0;
+                world_map[r][c].ground = GROUND_WATER;
+                world_map[r][c].side = SIDE_DIRT;
+            } else if (dist == 3) {
+                world_map[r][c].ground = GROUND_DIRT;
+                world_map[r][c].side = SIDE_DIRT;
             }
-            if (row >= 13 && row <= 15 && col >= 20 && col <= 90) {
-                rng_state = (u32)(col * 17 + row * 53);
-                rng_next();
-                if ((rng_next() % 100) < 50 && world_map[row][col] == TILE_GRASS)
-                    world_map[row][col] = TILE_DIRT;
+        }
+    }
+
+    // === LAKE: cols 100-115, rows 8-14, height 0 ===
+    for (int c = 100; c <= 115; c++) {
+        for (int r = 8; r <= 14; r++) {
+            int dc = c - 107, dr = r - 11;
+            int d2 = dc * dc + dr * dr * 3;
+            if (d2 <= 35) {
+                world_map[r][c].height = 0;
+                world_map[r][c].ground = GROUND_WATER;
+                world_map[r][c].side = SIDE_DIRT;
             }
-            if (col >= 175 && col <= 195) {
-                if (row == 3 || row == 12) world_map[row][col] = TILE_STONE;
-                if ((col == 175 || col == 195) && row >= 3 && row <= 12)
-                    world_map[row][col] = TILE_STONE;
-                if (col >= 177 && col <= 193 && row >= 5 && row <= 10)
-                    world_map[row][col] = TILE_STONE;
+        }
+    }
+
+    // === FORTRESS: cols 150-170, rows 3-12, brick walls + roof ===
+    for (int c = 150; c <= 170; c++) {
+        for (int r = 3; r <= 12; r++) {
+            int on_wall = 0;
+            // Outer walls
+            if (r == 3 || r == 12) on_wall = 1;
+            if (c == 150 || c == 170) on_wall = 1;
+
+            if (on_wall) {
+                world_map[r][c].ground = GROUND_ROOF;
+                world_map[r][c].side = SIDE_BRICK;
+                world_map[r][c].height = 4;
+            } else if (c >= 152 && c <= 168 && r >= 5 && r <= 10) {
+                // Inner courtyard floor - stone at height 2
+                world_map[r][c].ground = GROUND_STONE;
+                world_map[r][c].side = SIDE_STONE;
+                world_map[r][c].height = 2;
             }
-            if (col >= 15 && col <= 25 && row >= 0 && row <= 3) {
-                rng_state = (u32)(col * 23 + row * 67);
-                rng_next();
-                if ((rng_next() % 100) < 40) world_map[row][col] = TILE_STONE;
+
+            // Corner towers (even higher)
+            if ((c >= 149 && c <= 151 && (r >= 2 && r <= 4)) ||
+                (c >= 169 && c <= 171 && (r >= 2 && r <= 4)) ||
+                (c >= 149 && c <= 151 && (r >= 11 && r <= 13)) ||
+                (c >= 169 && c <= 171 && (r >= 11 && r <= 13))) {
+                world_map[r][c].ground = GROUND_ROOF;
+                world_map[r][c].side = SIDE_BRICK;
+                world_map[r][c].height = 4;
+            }
+
+            // Main hall inside fortress
+            if (c >= 155 && c <= 165 && r >= 6 && r <= 9) {
+                world_map[r][c].ground = GROUND_ROOF;
+                world_map[r][c].side = SIDE_BRICK;
+                world_map[r][c].height = 3;
+            }
+        }
+    }
+
+    // === DIRT PATCHES: cols 80-95 ===
+    for (int c = 80; c <= 95; c++) {
+        for (int r = 0; r < MAP_ROWS; r++) {
+            rng_state = (u32)(c * 31 + r * 97 + 12345);
+            rng_next();
+            if ((rng_next() % 100) < 50 && world_map[r][c].ground == GROUND_GRASS) {
+                world_map[r][c].ground = GROUND_DIRT;
+                world_map[r][c].side = SIDE_DIRT;
+            }
+        }
+    }
+
+    // === STONE RUINS: cols 175-195 ===
+    for (int c = 175; c <= 195; c++) {
+        for (int r = 0; r < MAP_ROWS; r++) {
+            if (r == 3 || r == 12) {
+                world_map[r][c].ground = GROUND_STONE;
+                world_map[r][c].side = SIDE_STONE;
+                world_map[r][c].height = 2;
+            }
+            if ((c == 175 || c == 195) && r >= 3 && r <= 12) {
+                world_map[r][c].ground = GROUND_STONE;
+                world_map[r][c].side = SIDE_STONE;
+                world_map[r][c].height = 2;
+            }
+            if (c >= 180 && c <= 190 && r >= 5 && r <= 10) {
+                world_map[r][c].ground = GROUND_STONE;
+                world_map[r][c].side = SIDE_STONE;
+                world_map[r][c].height = 3;
+            }
+        }
+    }
+
+    // === Small pond near start ===
+    for (int c = 5; c <= 10; c++) {
+        for (int r = 1; r <= 4; r++) {
+            int dc = c - 7, dr = r - 2;
+            if (dc * dc + dr * dr <= 4) {
+                world_map[r][c].height = 0;
+                world_map[r][c].ground = GROUND_WATER;
+                world_map[r][c].side = SIDE_DIRT;
             }
         }
     }
 }
 
 //=============================================================================
-// Palette
+// Palette setup
 //=============================================================================
 static void setup_palette(void) {
-    pal_bg_mem[0]  = RGB15(2, 2, 5);
-    pal_bg_mem[1]  = RGB15(1, 1, 1);
-    pal_bg_mem[2]  = RGB15(10, 22, 5);
-    pal_bg_mem[3]  = RGB15(7, 18, 3);
-    pal_bg_mem[4]  = RGB15(3, 10, 2);
-    pal_bg_mem[5]  = RGB15(5, 14, 3);
-    pal_bg_mem[6]  = RGB15(18, 18, 16);
-    pal_bg_mem[7]  = RGB15(14, 14, 13);
-    pal_bg_mem[8]  = RGB15(7, 7, 6);
-    pal_bg_mem[9]  = RGB15(10, 10, 9);
-    pal_bg_mem[10] = RGB15(18, 12, 6);
-    pal_bg_mem[11] = RGB15(14, 9, 4);
-    pal_bg_mem[12] = RGB15(7, 4, 2);
-    pal_bg_mem[13] = RGB15(10, 7, 3);
-    pal_bg_mem[14] = RGB15(5, 15, 22);
-    pal_bg_mem[15] = RGB15(3, 11, 18);
-    pal_bg_mem[16] = RGB15(1, 5, 10);
-    pal_bg_mem[17] = RGB15(2, 8, 14);
+    // Copy metatile palette to BG palette
+    for (int i = 0; i < MT_PALETTE_SIZE; i++)
+        pal_bg_mem[i] = mt_palette[i];
+
+    // Hero sprite palette
     memcpy16(pal_obj_mem, hero_walkPal, hero_walkPalLen / 2);
 }
 
 //=============================================================================
-// Strip-buffer iso cube renderer (boot-time only)
-// Renders in world pixel coordinates; strip_buf origin = (strip_ox, strip_oy)
+// Tile dedup with simple hash for speed
 //=============================================================================
-static int strip_ox, strip_oy;
+#define HASH_SIZE 1024
+#define HASH_MASK (HASH_SIZE - 1)
+static u16 hash_table[HASH_SIZE];  // tile index + 1, or 0 = empty
+static u16 hash_keys[HASH_SIZE];   // hash of tile data
 
-static inline void s_plot(int wx, int wy, u8 clr) {
-    int x = wx - strip_ox, y = wy - strip_oy;
-    if ((unsigned)x < STRIP_W && (unsigned)y < STRIP_H)
-        strip_buf[y * STRIP_W + x] = clr;
+static u32 tile_hash(const u8 *data) {
+    u32 h = 0x811C9DC5;
+    const u32 *p = (const u32 *)data;
+    for (int i = 0; i < 16; i++) {
+        h ^= p[i];
+        h *= 0x01000193;
+    }
+    return h;
 }
 
-static void s_hline(int wx0, int wx1, int wy, u8 clr) {
-    int y = wy - strip_oy;
-    if ((unsigned)y >= STRIP_H) return;
-    int x0 = wx0 - strip_ox, x1 = wx1 - strip_ox;
-    if (x0 < 0) x0 = 0;
-    if (x1 >= STRIP_W) x1 = STRIP_W - 1;
-    if (x0 > x1) return;
-    u8 *row = &strip_buf[y * STRIP_W];
-    for (int x = x0; x <= x1; x++) row[x] = clr;
-}
+static int find_or_add_tile(const u8 *pixels) {
+    u32 h = tile_hash(pixels);
+    u32 slot = h & HASH_MASK;
 
-static void render_cube_strip(int sx, int sy, int type) {
-    u8 ctl = type * 4 + 2, ctr = type * 4 + 3;
-    u8 csl = type * 4 + 4, csr = type * 4 + 5;
-    u8 cbr = 1;
-    int hw = ISO_HALF_W, hh = ISO_HALF_H;
-
-    // Top face upper half
-    for (int dy = 0; dy < hh; dy++) {
-        int hs = (dy * hw + hh / 2) / hh;
-        int py = sy + dy;
-        s_plot(sx - hs, py, cbr);
-        s_plot(sx + hs, py, cbr);
-        if (sx - hs + 1 < sx) s_hline(sx - hs + 1, sx - 1, py, ctl);
-        if (sx < sx + hs)     s_hline(sx, sx + hs - 1, py, ctr);
+    // Linear probe
+    for (int i = 0; i < HASH_SIZE; i++) {
+        u32 s = (slot + i) & HASH_MASK;
+        if (hash_table[s] == 0) {
+            // Empty slot - add new tile
+            if (num_tiles >= MAX_PRECOMP_TILES) return 0;
+            int id = num_tiles++;
+            memcpy(tile_dict[id], pixels, 64);
+            hash_table[s] = id + 1;
+            hash_keys[s] = (u16)(h >> 16);
+            return id;
+        }
+        int tid = hash_table[s] - 1;
+        if (hash_keys[s] == (u16)(h >> 16)) {
+            // Possible match - verify
+            if (memcmp(tile_dict[tid], pixels, 64) == 0)
+                return tid;
+        }
     }
-    // Top face lower half
-    for (int dy = 0; dy < hh; dy++) {
-        int hs = ((hh - dy) * hw + hh / 2) / hh;
-        int py = sy + hh + dy;
-        s_plot(sx - hs, py, cbr);
-        s_plot(sx + hs, py, cbr);
-        if (sx - hs + 1 < sx) s_hline(sx - hs + 1, sx - 1, py, ctl);
-        if (sx < sx + hs)     s_hline(sx, sx + hs - 1, py, ctr);
-    }
-    // Left side
-    for (int py = sy + hh; py < sy + 2 * hh + CUBE_SIDE_H; py++) {
-        int dt = py - (sy + hh);
-        int x_top = (dt <= hh) ? sx - hw + (dt * hw) / hh : sx;
-        int db = py - (sy + hh + CUBE_SIDE_H);
-        int x_bot;
-        if (db < 0)        x_bot = sx - hw;
-        else if (db <= hh) x_bot = sx - hw + (db * hw) / hh;
-        else               continue;
-        if (x_bot >= x_top) continue;
-        s_plot(x_bot, py, cbr);
-        if (x_bot + 1 < x_top) s_hline(x_bot + 1, x_top - 1, py, csl);
-    }
-    // Right side
-    for (int py = sy + hh; py < sy + 2 * hh + CUBE_SIDE_H; py++) {
-        int dt = py - (sy + hh);
-        int x_top = (dt <= hh) ? sx + hw - (dt * hw) / hh : sx;
-        int db = py - (sy + hh + CUBE_SIDE_H);
-        int x_bot;
-        if (db < 0)        x_bot = sx + hw;
-        else if (db <= hh) x_bot = sx + hw - (db * hw) / hh;
-        else               continue;
-        if (x_top >= x_bot) continue;
-        if (x_top < x_bot - 1) s_hline(x_top, x_bot - 1, py, csr);
-        s_plot(x_bot, py, cbr);
-    }
+    return 0;  // hash table full
 }
 
 //=============================================================================
-// Tile dedup (boot-time)
+// Metatile stamping: composite a 4x2 metatile at world pixel (px, py)
+// Handles transparency (pixel index 0 = don't overwrite)
 //=============================================================================
-static int find_or_add_tile(const u8 *buf, int stride) {
-    for (int i = 0; i < num_tiles; i++) {
-        const u8 *s = (const u8 *)&tile_dict[i * 16];
-        int match = 1;
-        for (int r = 0; r < 8 && match; r++)
-            for (int c = 0; c < 8 && match; c++)
-                if (buf[r * stride + c] != s[r * 8 + c]) match = 0;
-        if (match) return i;
+static void stamp_metatile(int mt_idx, int px, int py) {
+    const u16 *mt_tiles = mt_metatile_tiles[mt_idx];
+
+    for (int ty = 0; ty < 2; ty++) {
+        for (int tx = 0; tx < 4; tx++) {
+            int src_tile = mt_tiles[ty * 4 + tx];
+            const u8 *src = mt_tile_pixels[src_tile];
+
+            // World tile coords
+            int wtc = (px + tx * 8 - WORLD_PX_X0) / 8;
+            int wtr = (py + ty * 8 - WORLD_PX_Y0) / 8;
+
+            if (wtc < 0 || wtc >= WORLD_TILE_W || wtr < 0 || wtr >= WORLD_TILE_H)
+                continue;
+
+            // Check if source tile is all transparent
+            int has_opaque = 0;
+            for (int i = 0; i < 64; i++) {
+                if (src[i] != 0) { has_opaque = 1; break; }
+            }
+            if (!has_opaque) continue;
+
+            // Get current tile pixels at this position
+            int cur_idx = world_tilemap[wtr * WORLD_TILE_W + wtc];
+            u8 composite[64];
+            memcpy(composite, tile_dict[cur_idx], 64);
+
+            // Composite: overwrite non-transparent pixels
+            for (int i = 0; i < 64; i++) {
+                if (src[i] != 0) composite[i] = src[i];
+            }
+
+            // Dedup and store
+            int new_idx = find_or_add_tile(composite);
+            world_tilemap[wtr * WORLD_TILE_W + wtc] = (u16)new_idx;
+        }
     }
-    if (num_tiles >= MAX_PRECOMP_TILES) return 0;
-    int id = num_tiles++;
-    u8 *dst = (u8 *)&tile_dict[id * 16];
-    for (int r = 0; r < 8; r++)
-        for (int c = 0; c < 8; c++)
-            dst[r * 8 + c] = buf[r * stride + c];
-    return id;
 }
 
 //=============================================================================
-// Boot: pre-compute entire world tilemap
-// Process in 2D patches: 256×80 pixels each.
-// Safe extraction per patch: 31 tile cols × 10 tile rows.
+// Boot: build world tilemap using metatile compositing
 //=============================================================================
 static void precompute_world(void) {
     num_tiles = 0;
     memset(world_tilemap, 0, sizeof(world_tilemap));
+    memset(hash_table, 0, sizeof(hash_table));
+    memset(tile_dict[0], 0, 64);  // tile 0 = transparent
+    num_tiles = 1;
 
-    // Step: 31 tile cols (248px) horizontally, 10 tile rows (80px) vertically
-    for (int py = WORLD_PX_Y0; py < WORLD_PX_Y1; py += 80) {
-        for (int px = WORLD_PX_X0; px < WORLD_PX_X1; px += 248) {
-            strip_ox = px;
-            strip_oy = py;
-            memset(strip_buf, 0, sizeof(strip_buf));
+    // Ground metatile indices (MT_GROUND_GRASS etc map to metatile IDs 0-4)
+    // Side metatile indices (MT_SIDE_GRASS_EDGE etc map to metatile IDs 5-9)
+    static const int ground_mt[] = {
+        MT_GROUND_GRASS, MT_GROUND_STONE, MT_GROUND_DIRT,
+        MT_GROUND_WATER, MT_GROUND_ROOF
+    };
+    static const int side_mt[] = {
+        MT_SIDE_GRASS_EDGE, MT_SIDE_STONE_WALL, MT_SIDE_DIRT_WALL,
+        MT_SIDE_BRICK_WALL, MT_SIDE_ROOF_EDGE
+    };
 
-            // Render all cubes overlapping extended range
-            for (int row = 0; row < MAP_ROWS; row++) {
-                for (int col = 0; col < MAP_COLS; col++) {
-                    int wx, wy;
-                    iso_tile_to_world(col, row, &wx, &wy);
-                    if (wx + 16 <= px || wx - 16 >= px + STRIP_W) continue;
-                    if (wy + 24 <= py || wy >= py + STRIP_H) continue;
-                    render_cube_strip(wx, wy, world_map[row][col]);
-                }
+    // Render back-to-front: by (col+row) ascending
+    for (int diag = 0; diag < MAP_COLS + MAP_ROWS - 1; diag++) {
+        int r_min = diag - (MAP_COLS - 1);
+        if (r_min < 0) r_min = 0;
+        int r_max = diag;
+        if (r_max >= MAP_ROWS) r_max = MAP_ROWS - 1;
+
+        for (int r = r_min; r <= r_max; r++) {
+            int c = diag - r;
+            if (c < 0 || c >= MAP_COLS) continue;
+
+            MapCell *cell = &world_map[r][c];
+            int wx = (c - r) * ISO_HALF_W;
+            int base_y = (c + r) * ISO_HALF_H;
+            int h = cell->height;
+
+            int top_y = base_y - h * SIDE_HEIGHT;
+            int px = wx - ISO_HALF_W;  // left edge of 32px wide metatile
+
+            // Draw side faces from bottom to top
+            for (int i = h - 1; i >= 0; i--) {
+                stamp_metatile(side_mt[cell->side], px, top_y + ISO_TILE_H + i * SIDE_HEIGHT);
             }
 
-            // Extract tiles from safe region into world_tilemap
-            int wtc_start = (px - WORLD_PX_X0) / 8;
-            int wtc_end = wtc_start + 31;
-            if (wtc_end > WORLD_TILE_W) wtc_end = WORLD_TILE_W;
+            // Draw top face
+            stamp_metatile(ground_mt[cell->ground], px, top_y);
+        }
+    }
+}
 
-            int wtr_start = (py - WORLD_PX_Y0) / 8;
-            int wtr_end = wtr_start + 10;
-            if (wtr_end > WORLD_TILE_H) wtr_end = WORLD_TILE_H;
-
-            for (int wtr = wtr_start; wtr < wtr_end; wtr++) {
-                for (int wtc = wtc_start; wtc < wtc_end; wtc++) {
-                    int bx = (WORLD_PX_X0 + wtc * 8) - px;
-                    int by = (WORLD_PX_Y0 + wtr * 8) - py;
-                    if (bx < 0 || bx + 8 > STRIP_W) continue;
-                    if (by < 0 || by + 8 > STRIP_H) continue;
-                    int tid = find_or_add_tile(&strip_buf[by * STRIP_W + bx], STRIP_W);
-                    world_tilemap[wtr * WORLD_TILE_W + wtc] = (u16)tid;
-                }
-            }
+//=============================================================================
+// Upload tile dictionary to VRAM as 8bpp tiles
+//=============================================================================
+static void upload_tiles_to_vram(void) {
+    // Each 8bpp tile = 64 bytes = 16 words
+    u32 *dst = (u32 *)&tile_mem[TILE_CBB][0];
+    for (int t = 0; t < num_tiles; t++) {
+        const u8 *src = tile_dict[t];
+        u32 *d = &dst[t * 16];
+        for (int i = 0; i < 16; i++) {
+            const u8 *s = &src[i * 4];
+            d[i] = s[0] | (s[1] << 8) | (s[2] << 16) | (s[3] << 24);
         }
     }
 }
@@ -322,13 +427,11 @@ static void update_hw_tilemap(int cam_wx, int cam_wy) {
     int desired_col = cam_tc - 32;
     int desired_row = cam_tr - 32;
 
-    // Clamp
     if (desired_col < 0) desired_col = 0;
     if (desired_col > WORLD_TILE_W - 64) desired_col = WORLD_TILE_W - 64;
     if (desired_row < 0) desired_row = 0;
     if (desired_row > WORLD_TILE_H - 64) desired_row = WORLD_TILE_H - 64;
 
-    // Update columns first
     while (loaded_col_min < desired_col) {
         load_hw_col(loaded_col_min + 64);
         loaded_col_min++;
@@ -337,8 +440,6 @@ static void update_hw_tilemap(int cam_wx, int cam_wy) {
         loaded_col_min--;
         load_hw_col(loaded_col_min);
     }
-
-    // Then rows
     while (loaded_row_min < desired_row) {
         load_hw_row(loaded_row_min + 64);
         loaded_row_min++;
@@ -461,11 +562,11 @@ int main(void) {
     // Load hero sprite tiles
     memcpy32(&tile_mem[4][0], hero_walkTiles, hero_walkTilesLen / 4);
 
-    // === BOOT: pre-compute entire world tilemap (takes a few seconds) ===
+    // === BOOT: build world tilemap via metatile compositing ===
     precompute_world();
 
     // Upload tile dictionary to VRAM
-    memcpy32(&tile_mem[TILE_CBB][0], tile_dict, (num_tiles * 64) / 4);
+    upload_tiles_to_vram();
 
     // Set up Mode 0: BG0 (8bpp, 64×64) + OBJ
     REG_BG0CNT = BG_CBB(TILE_CBB) | BG_SBB(TILE_SBB) | BG_8BPP | BG_SIZE3 | BG_PRIO(1);
@@ -489,7 +590,7 @@ int main(void) {
     if (loaded_row_min > WORLD_TILE_H - 64) loaded_row_min = WORLD_TILE_H - 64;
     load_hw_full();
 
-    // === MAIN LOOP: zero rendering, just tilemap index copies ===
+    // === MAIN LOOP ===
     while (1) {
         key_poll();
         player_update();
@@ -498,10 +599,8 @@ int main(void) {
         cam_wx = FP2INT(camera.x);
         cam_wy = FP2INT(camera.y);
 
-        // Update ring buffer (a few u16 writes per frame)
         update_hw_tilemap(cam_wx, cam_wy);
 
-        // BG scroll: hardware wraps at 512 naturally
         int scroll_x = cam_wx - WORLD_PX_X0 - SCREEN_W / 2;
         int scroll_y = cam_wy - WORLD_PX_Y0 - SCREEN_H / 2;
         REG_BG0HOFS = scroll_x & 0x1FF;

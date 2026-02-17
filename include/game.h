@@ -1,4 +1,4 @@
-// game.h — Core game types and constants
+// game.h — v0.2: Metatile engine with height stacking
 #ifndef GAME_H
 #define GAME_H
 
@@ -11,24 +11,36 @@
 #define SCREEN_H     160
 
 //=============================================================================
-// Isometric tile dimensions (FFTA-style 2:1)
+// Isometric tile dimensions (2:1 ratio)
 //=============================================================================
 #define ISO_TILE_W   32
 #define ISO_TILE_H   16
 #define ISO_HALF_W   16
 #define ISO_HALF_H   8
-#define CUBE_SIDE_H  8
+#define SIDE_HEIGHT  16   // each side face is 16px tall (= 2 tile rows)
 
 //=============================================================================
 // Map — long side-scroller strip
 //=============================================================================
 #define MAP_COLS     200
 #define MAP_ROWS     16
+#define MAX_HEIGHT   4
 
-#define TILE_GRASS   0
-#define TILE_STONE   1
-#define TILE_DIRT    2
-#define TILE_WATER   3
+// Ground types (top face)
+#define GROUND_GRASS  0
+#define GROUND_STONE  1
+#define GROUND_DIRT   2
+#define GROUND_WATER  3
+#define GROUND_ROOF   4
+#define NUM_GROUND    5
+
+// Side types
+#define SIDE_GRASS    0
+#define SIDE_STONE    1
+#define SIDE_DIRT     2
+#define SIDE_BRICK    3
+#define SIDE_ROOF     4
+#define NUM_SIDES     5
 
 //=============================================================================
 // BG tilemap: 64×64 (BG_SIZE3 = 512×512 pixels)
@@ -39,28 +51,30 @@
 #define TILE_SBB     28
 
 //=============================================================================
-// World pixel extents (derived from map + iso transform)
-// Cube at (col,row): wx = (col-row)*16, wy = (col+row)*8
-// Cube renders: x in [wx-16, wx+16], y in [wy, wy+24]
+// World pixel extents (with height stacking)
+// Cell (col,row): base wx = (col-row)*16, base wy = (col+row)*8
+// Top face at height h: y = wy - h*16
+// Max upward shift = MAX_HEIGHT*16 = 64
+// Bottom of tallest column: wy + 16 (top face height)
 //=============================================================================
-#define WORLD_PX_X0  (-256)   // leftmost rendered pixel
-#define WORLD_PX_Y0  (0)      // topmost rendered pixel
-#define WORLD_PX_X1  (3200)   // rightmost rendered pixel
-#define WORLD_PX_Y1  (1736)   // bottommost rendered pixel
+#define WORLD_PX_X0  (-256)
+#define WORLD_PX_Y0  (-64)     // account for max height elevation
+#define WORLD_PX_X1  (3200)
+#define WORLD_PX_Y1  (1752)    // (199+15)*8 + 16 = 1728 + 16 = 1744, round up
 
 #define WORLD_TILE_W ((WORLD_PX_X1 - WORLD_PX_X0) / 8)  // 432
-#define WORLD_TILE_H ((WORLD_PX_Y1 - WORLD_PX_Y0) / 8)  // 217
+#define WORLD_TILE_H ((WORLD_PX_Y1 - WORLD_PX_Y0) / 8)  // 227
 
-// World bounds for clamping (center of occupied area)
+// World bounds for clamping
 #define WORLD_WX_MIN ((0 - (MAP_ROWS-1)) * ISO_HALF_W)
 #define WORLD_WX_MAX (((MAP_COLS-1) - 0) * ISO_HALF_W)
-#define WORLD_WY_MIN 0
-#define WORLD_WY_MAX (((MAP_COLS-1) + (MAP_ROWS-1)) * ISO_HALF_H + 2*ISO_HALF_H + CUBE_SIDE_H)
+#define WORLD_WY_MIN (-MAX_HEIGHT * SIDE_HEIGHT)
+#define WORLD_WY_MAX (((MAP_COLS-1) + (MAP_ROWS-1)) * ISO_HALF_H + ISO_TILE_H)
 
 //=============================================================================
 // Pre-computed tilemap limits
 //=============================================================================
-#define MAX_PRECOMP_TILES 384
+#define MAX_PRECOMP_TILES 512
 
 //=============================================================================
 // Fixed-point (24.8)
@@ -91,6 +105,16 @@ typedef struct {
 // Camera
 //=============================================================================
 typedef struct { int x, y; } Camera;  // fixed-point
+
+//=============================================================================
+// Map cell
+//=============================================================================
+typedef struct {
+    u8 ground;   // GROUND_*
+    u8 side;     // SIDE_*
+    u8 height;   // 0..MAX_HEIGHT
+    u8 pad;
+} MapCell;
 
 //=============================================================================
 // Isometric math (inline)

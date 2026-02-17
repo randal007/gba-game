@@ -1,35 +1,28 @@
 # GBA Isometric Action Game — Status
 
-## Current State: Pre-computed World Tilemap (v3)
+## Current Version: v0.2
 
-### Architecture
-- **Boot phase (~2-5s):** Renders entire 200×16 iso world in 256×80 pixel patches, deduplicates tiles into a dictionary (≤384 unique 8×8 tiles), builds a complete 432×217 world tilemap in EWRAM
-- **Runtime:** 64×64 hardware tilemap is a ring buffer / sliding window into the pre-computed world tilemap. Scrolling = copying tilemap indices (u16 writes). **ZERO pixel rendering or tile dedup at runtime.**
+### v0.2 — Metatile Engine + Height Stacking (2025-02-16)
+Major engine rewrite:
+- **Metatile system**: Replaced pixel-by-pixel boot rendering with pre-made 8×8 tile compositing. Each iso tile type (ground/side) is a 4×2 metatile arrangement. Boot builds world tilemap by stamping metatile indices with transparency compositing and hash-based dedup. Boot time: near-instant (was ~30 seconds).
+- **Height stacking**: Each map cell has a height value (0–4). Renderer draws back-to-front, bottom-to-top: side face metatiles stack below the top face. Creates visible cliffs, walls, and elevation changes.
+- **Pixel's tile art integrated**: 10 tile PNGs from `assets/tiles/` converted via `tools/convert_tiles.py` into 81 unique 8×8 tiles with a 52-color unified palette. Ground types: grass, stone, dirt, water, roof. Side types: grass_edge, stone_wall, dirt_wall, brick_wall, roof_edge.
+- **World design**: 200×16 strip with varied terrain:
+  - Rolling grass hills (height 2–3) at three locations
+  - River valley (height 0 water) with dirt banks
+  - Lake near center
+  - Brick fortress with corner towers (height 4), courtyard, and inner hall
+  - Stone ruins at the far end
+  - Dirt patches and a small pond near the start
+- **Kept**: Player movement, camera follow, OBJ sprite hero — all unchanged
 
-### Memory Budget (EWRAM = 256KB)
-| Buffer | Size |
-|--------|------|
-| world_tilemap (432×217×2) | ~183KB |
-| tile_dict (384×64) | ~24KB |
-| strip_buf (256×80) | ~20KB |
-| world_map (200×16) | ~3KB |
-| **Total** | **~230KB** |
+### v0.1.1 — Pre-computed World Tilemap (2025-02-15)
+- Entire world rendered at boot → tile dictionary + world tilemap in EWRAM
+- Hardware ring buffer streams tiles as camera scrolls
+- Zero runtime rendering cost
 
-### Key Files
-- `src/main.c` — All game logic
-- `include/game.h` — Constants, types, inline math
-- `data/hero_walk.c/.h` — Hero sprite data
-- `data/floor_iso.c/.h` — (legacy, unused in current renderer)
-
-### What Works
-- Procedurally generated 200×16 tile world (grass, stone, dirt, water, fortress)
-- Isometric cube rendering with 4 terrain types
-- Hardware Mode 0 BG with 8bpp tiles, 64×64 tilemap (BG_SIZE3)
-- Smooth scrolling via ring buffer — no lag
+### v0.1 — Initial Working Build (2025-02-15)
+- Isometric rendering with procedural cube art
 - Hero sprite with 4-direction walk animation
-- Camera follows player with lerp
-
-### Commit History
-- v1: Direct render + full re-render on drift (laggy)
-- v2: Amortized re-render spread across frames (still laggy)
-- v3: **Pre-compute everything at boot** (current — should be lag-free)
+- Camera follow, D-pad movement
+- 200×16 world with grass, stone, dirt, water

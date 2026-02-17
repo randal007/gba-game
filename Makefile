@@ -35,6 +35,8 @@ LIBS     := -L$(DEVKITPRO)/libtonc/lib -ltonc
 #---------------------------------------------------------------------------------
 CFILES   := $(foreach dir,$(SOURCES),$(wildcard $(dir)/*.c))
 OFILES   := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(CFILES)))
+# Ensure metatiles data is generated before compiling
+$(BUILD)/main.o: data/metatiles.h data/metatiles.c
 DFILES   := $(OFILES:.o=.d)
 VPATH    := $(SOURCES)
 
