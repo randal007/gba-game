@@ -302,19 +302,24 @@ static void player_update(void) {
     if (iso_dx < 0 && iso_dy < 0) player.facing = DIR_NW;
     if (iso_dx < 0 && iso_dy > 0) player.facing = DIR_SW;
 
-    // Convert iso movement to world-space:
-    // iso X axis in world = (+1, +1) (right = col+1)
-    // iso Y axis in world = (-1, +1) (down = row+1)
-    int dx = iso_dx - iso_dy;  // world X
-    int dy = iso_dx + iso_dy;  // world Y
+    // Convert iso movement to world-space using tile axis vectors.
+    // Tile grid uses 2:1 ratio (ISO_HALF_W=16, ISO_HALF_H=8):
+    //   iso X axis (col+1) in world = (+16, +8)  → normalized (+2, +1)
+    //   iso Y axis (row+1) in world = (-16, +8)  → normalized (-2, +1)
+    int dx = iso_dx * 2 - iso_dy * 2;  // world X
+    int dy = iso_dx * 1 + iso_dy * 1;  // world Y
 
-    // Normalize if moving diagonally (two d-pad buttons)
-    if (dx != 0 && dy != 0) {
-        player.world_x += (dx * PLAYER_SPEED * 181) >> 8;
-        player.world_y += (dy * PLAYER_SPEED * 181) >> 8;
+    // Normalize speed: single axis = sqrt(4+1)=~2.24, diagonal = varies
+    // Apply speed (already accounts for the larger dx component)
+    int spd = PLAYER_SPEED;
+    if (iso_dx != 0 && iso_dy != 0) {
+        // Two iso directions pressed — true screen-axis movement
+        // dx could be 0 or ±4, dy could be 0 or ±2
+        player.world_x += (dx * spd) >> 1;
+        player.world_y += (dy * spd) >> 1;
     } else {
-        player.world_x += dx * PLAYER_SPEED;
-        player.world_y += dy * PLAYER_SPEED;
+        player.world_x += dx * spd;
+        player.world_y += dy * spd;
     }
 
     player.moving = (dx != 0 || dy != 0);
