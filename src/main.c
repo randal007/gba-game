@@ -1,4 +1,4 @@
-// main.c — v0.2: Metatile engine with height stacking
+// main.c — v0.3: Collision, jump, fall, occlusion
 #include "game.h"
 #include "../data/metatiles.h"
 #include "../data/hero_walk.h"
@@ -571,9 +571,54 @@ static void player_init(void) {
     player.frame = 0;
     player.frame_timer = 0;
     player.moving = 0;
+    player.tile_col = 3;
+    player.tile_row = 8;
+    player.height = world_map[8][3].height;
+    player.jumping = 0;
+    player.jump_timer = 0;
+    player.jump_visual_dy = 0;
+    player.falling = 0;
+    player.fall_timer = 0;
+    player.fall_visual_dy = 0;
 }
 
 static void player_update(void) {
+    // Update jump animation
+    if (player.jumping) {
+        player.jump_timer++;
+        // Parabolic arc: peaks at JUMP_DURATION/2
+        int half = JUMP_DURATION / 2;
+        int t = player.jump_timer;
+        if (t <= half) {
+            player.jump_visual_dy = -(JUMP_PEAK_H * t / half);
+        } else {
+            player.jump_visual_dy = -(JUMP_PEAK_H * (JUMP_DURATION - t) / half);
+        }
+        if (player.jump_timer >= JUMP_DURATION) {
+            player.jumping = 0;
+            player.jump_timer = 0;
+            player.jump_visual_dy = 0;
+        }
+        // Don't allow movement during jump
+        return;
+    }
+
+    // Update fall animation
+    if (player.falling) {
+        int height_diff = player.fall_start_h - player.fall_target_h;
+        int total_fall_px = height_diff * SIDE_HEIGHT;
+        player.fall_timer++;
+        player.fall_visual_dy = player.fall_timer * FALL_SPEED;
+        if (player.fall_visual_dy >= total_fall_px) {
+            player.fall_visual_dy = 0;
+            player.falling = 0;
+            player.fall_timer = 0;
+            player.height = player.fall_target_h;
+        }
+        // Don't allow movement during fall
+        return;
+    }
+
     int iso_dx = 0, iso_dy = 0;
     if (key_is_down(KEY_RIGHT)) { iso_dx += 1; player.facing = DIR_SE; }
     if (key_is_down(KEY_LEFT))  { iso_dx -= 1; player.facing = DIR_NW; }
@@ -585,22 +630,94 @@ static void player_update(void) {
     if (iso_dx < 0 && iso_dy < 0) player.facing = DIR_NW;
     if (iso_dx < 0 && iso_dy > 0) player.facing = DIR_SW;
 
+    // Jump (A button) — check if adjacent tile in facing direction is exactly 1 higher
+    if (key_hit(KEY_A)) {
+        // Determine adjacent tile in facing direction
+        int adj_col = player.tile_col;
+        int adj_row = player.tile_row;
+        switch (player.facing) {
+            case DIR_SE: adj_col++; break;
+            case DIR_NE: adj_row--; break;
+            case DIR_NW: adj_col--; break;
+            case DIR_SW: adj_row++; break;
+        }
+        MapCell *adj = get_map_cell(world_map, adj_col, adj_row);
+        if (adj && adj->height == player.height + 1) {
+            // Start jump: move player to adjacent tile
+            player.jumping = 1;
+            player.jump_timer = 0;
+            player.jump_visual_dy = 0;
+            player.tile_col = adj_col;
+            player.tile_row = adj_row;
+            player.height = adj->height;
+            int wx, wy;
+            iso_tile_to_world(adj_col, adj_row, &wx, &wy);
+            player.world_x = INT2FP(wx);
+            player.world_y = INT2FP(wy);
+        }
+    }
+
     int dx = iso_dx * 2 - iso_dy * 2;
     int dy = iso_dx * 1 + iso_dy * 1;
     int spd = PLAYER_SPEED;
 
+    int new_wx, new_wy;
     if (iso_dx != 0 && iso_dy != 0) {
-        player.world_x += (dx * spd) >> 1;
-        player.world_y += (dy * spd) >> 1;
+        new_wx = player.world_x + ((dx * spd) >> 1);
+        new_wy = player.world_y + ((dy * spd) >> 1);
     } else {
-        player.world_x += dx * spd;
-        player.world_y += dy * spd;
+        new_wx = player.world_x + dx * spd;
+        new_wy = player.world_y + dy * spd;
     }
 
-    if (player.world_x < bound_wx_min) player.world_x = bound_wx_min;
-    if (player.world_x > bound_wx_max) player.world_x = bound_wx_max;
-    if (player.world_y < bound_wy_min) player.world_y = bound_wy_min;
-    if (player.world_y > bound_wy_max) player.world_y = bound_wy_max;
+    // Clamp to world bounds
+    if (new_wx < bound_wx_min) new_wx = bound_wx_min;
+    if (new_wx > bound_wx_max) new_wx = bound_wx_max;
+    if (new_wy < bound_wy_min) new_wy = bound_wy_min;
+    if (new_wy > bound_wy_max) new_wy = bound_wy_max;
+
+    // Check collision at new position
+    if (dx != 0 || dy != 0) {
+        int new_col, new_row;
+        world_to_tile(FP2INT(new_wx), FP2INT(new_wy), &new_col, &new_row);
+
+        // Clamp tile coords
+        if (new_col < 0) new_col = 0;
+        if (new_col >= MAP_COLS) new_col = MAP_COLS - 1;
+        if (new_row < 0) new_row = 0;
+        if (new_row >= MAP_ROWS) new_row = MAP_ROWS - 1;
+
+        MapCell *dest = &world_map[new_row][new_col];
+
+        if (dest->height > player.height) {
+            // Wall collision — block movement
+            // Don't update position
+        } else if (dest->height < player.height) {
+            // Fall — allow movement, start fall animation
+            player.world_x = new_wx;
+            player.world_y = new_wy;
+            int old_tile_col = player.tile_col;
+            int old_tile_row = player.tile_row;
+            player.tile_col = new_col;
+            player.tile_row = new_row;
+
+            // Only trigger fall animation when changing tiles
+            if (new_col != old_tile_col || new_row != old_tile_row) {
+                player.falling = 1;
+                player.fall_timer = 0;
+                player.fall_visual_dy = 0;
+                player.fall_start_h = player.height;
+                player.fall_target_h = dest->height;
+                // height updates when fall completes
+            }
+        } else {
+            // Same height — allow
+            player.world_x = new_wx;
+            player.world_y = new_wy;
+            player.tile_col = new_col;
+            player.tile_row = new_row;
+        }
+    }
 
     player.moving = (dx != 0 || dy != 0);
     if (player.moving) {
@@ -619,6 +736,21 @@ static void player_draw(void) {
     int sx, sy;
     world_to_screen(FP2INT(player.world_x), FP2INT(player.world_y),
                     FP2INT(camera.x), FP2INT(camera.y), &sx, &sy);
+
+    // Apply height offset: raise sprite by current height * SIDE_HEIGHT
+    int height_for_draw = player.height;
+    int extra_dy = 0;
+
+    if (player.falling) {
+        // During fall, interpolate: start at old height, end at new height
+        height_for_draw = player.fall_start_h;
+        extra_dy = player.fall_visual_dy;  // positive = moving down
+    }
+
+    sy -= height_for_draw * SIDE_HEIGHT;
+    sy += extra_dy;
+    sy += player.jump_visual_dy;  // negative during jump = moves up
+
     sx -= PLAYER_SPR_W / 2;
     sy -= PLAYER_SPR_H / 2;
 
@@ -632,21 +764,56 @@ static void player_draw(void) {
     }
     int tile_id = (dir_row * HERO_WALK_FRAMES + player.frame) * HERO_TILES_PER_FRAME;
 
+    // Occlusion: check if any tile in front of player (higher diag index) is taller
+    // Front tiles = tiles with higher (col+row) value and overlapping screen position
+    // Simple approach: check the tile directly "in front" (toward camera, +1 diag)
+    // If that tile's visual top is above the player, put sprite behind BG (prio 2)
+    int prio = 0;  // default: sprite in front of BG
+    int pcol = player.tile_col;
+    int prow = player.tile_row;
+
+    // Check tiles in the row in front (closer to camera = higher col+row)
+    // We check a few tiles at diag+1 and diag+2
+    for (int dd = 1; dd <= 2; dd++) {
+        for (int dr = -1; dr <= 1; dr++) {
+            int fc = pcol + dd - dr;  // keep col+row = diag + dd
+            int fr = prow + dr;
+            // Verify: fc + fr = pcol + prow + dd (should be in front)
+            // fc = pcol + dd - dr, fr = prow + dr → fc+fr = pcol+prow+dd ✓
+            MapCell *front = get_map_cell(world_map, fc, fr);
+            if (front && front->height > player.height) {
+                // This front tile is taller — check if it visually overlaps
+                int fwx, fwy;
+                iso_tile_to_world(fc, fr, &fwx, &fwy);
+                int ftop_y = fwy - front->height * SIDE_HEIGHT;
+                int player_wy = FP2INT(player.world_y) - player.height * SIDE_HEIGHT;
+                if (ftop_y <= player_wy + 8) {
+                    prio = 2;  // behind BG layer (BG is prio 1)
+                }
+            }
+        }
+    }
+
     obj_buffer[0].attr0 = ATTR0_Y(sy & 0xFF) | ATTR0_SQUARE | ATTR0_4BPP;
     obj_buffer[0].attr1 = ATTR1_X(sx & 0x1FF) | ATTR1_SIZE_32;
-    obj_buffer[0].attr2 = ATTR2_ID(tile_id) | ATTR2_PRIO(0) | ATTR2_PALBANK(0);
+    obj_buffer[0].attr2 = ATTR2_ID(tile_id) | ATTR2_PRIO(prio) | ATTR2_PALBANK(0);
 }
 
 //=============================================================================
 // Camera
 //=============================================================================
 static void camera_update(void) {
+    // Camera target includes height offset so the view follows the player vertically
+    int target_y = player.world_y - INT2FP(player.height * SIDE_HEIGHT);
     camera.x += (player.world_x - camera.x) >> 3;
-    camera.y += (player.world_y - camera.y) >> 3;
+    camera.y += (target_y - camera.y) >> 3;
     if (camera.x < bound_wx_min) camera.x = bound_wx_min;
     if (camera.x > bound_wx_max) camera.x = bound_wx_max;
-    if (camera.y < bound_wy_min) camera.y = bound_wy_min;
-    if (camera.y > bound_wy_max) camera.y = bound_wy_max;
+    // Don't clamp camera Y too aggressively — allow it to follow height
+    int cam_y_min = bound_wy_min - INT2FP(MAX_HEIGHT * SIDE_HEIGHT);
+    int cam_y_max = bound_wy_max;
+    if (camera.y < cam_y_min) camera.y = cam_y_min;
+    if (camera.y > cam_y_max) camera.y = cam_y_max;
 }
 
 //=============================================================================

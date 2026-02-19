@@ -1,4 +1,4 @@
-// game.h — v0.2: Metatile engine with height stacking
+// game.h — v0.3: Collision, jump, fall, occlusion
 #ifndef GAME_H
 #define GAME_H
 
@@ -97,9 +97,26 @@ enum { DIR_SE = 0, DIR_NE = 1, DIR_NW = 2, DIR_SW = 3 };
 #define PLAYER_SPR_H     32
 
 typedef struct {
-    int world_x, world_y;  // fixed-point
+    int world_x, world_y;  // fixed-point (isometric base plane)
     int facing, frame, frame_timer, moving;
+    int tile_col, tile_row; // current map tile
+    int height;             // current logical height level (0..MAX_HEIGHT)
+    int jumping;            // 1 if in jump animation
+    int jump_timer;         // frame counter for jump arc
+    int jump_visual_dy;     // visual Y offset during jump (pixels, negative = up)
+    int fall_timer;         // frame counter for fall animation
+    int falling;            // 1 if falling
+    int fall_visual_dy;     // visual Y offset during fall
+    int fall_start_h;       // height we started falling from
+    int fall_target_h;      // height we're falling to
 } Player;
+
+//=============================================================================
+// Jump constants
+//=============================================================================
+#define JUMP_DURATION   16   // frames for jump animation
+#define JUMP_PEAK_H     12   // max visual rise in pixels
+#define FALL_SPEED      3    // pixels per frame during fall
 
 //=============================================================================
 // Camera
@@ -127,6 +144,22 @@ static inline void iso_tile_to_world(int col, int row, int *wx, int *wy) {
 static inline void world_to_screen(int wx, int wy, int cam_x, int cam_y, int *sx, int *sy) {
     *sx = wx - cam_x + SCREEN_W / 2;
     *sy = wy - cam_y + SCREEN_H / 2;
+}
+
+// Convert world pixel coords to tile col/row (nearest tile center)
+static inline void world_to_tile(int wx, int wy, int *col, int *row) {
+    // wx = (c-r)*16, wy = (c+r)*8
+    // c = (wx + 2*wy) / 32, r = (2*wy - wx) / 32
+    // Add 16 to numerator for rounding to nearest
+    *col = (wx + 2 * wy + 16) / 32;
+    *row = (2 * wy - wx + 16) / 32;
+}
+
+// Get map cell safely (returns NULL if out of bounds)
+static inline MapCell *get_map_cell(MapCell map[][MAP_COLS], int col, int row) {
+    if (col < 0 || col >= MAP_COLS || row < 0 || row >= MAP_ROWS)
+        return (MapCell *)0;
+    return &map[row][col];
 }
 
 #endif // GAME_H
